@@ -29,6 +29,7 @@ from .seed import currency_id_map
 EXPENSE_SHEET = "支出"
 INCOME_SHEET = "入账"
 RATE_SHEET = "汇率"
+STATS_SHEET = "统计"
 
 # Deterministic namespace for initial-import UIDs. uuid5 over a stable name keeps
 # external_uid identical across re-runs of the migration on an unchanged workbook.
@@ -43,6 +44,7 @@ def make_external_uid(sheet: str, source_row: int, row_hash: str) -> str:
 @dataclass
 class Report:
     rates_loaded: int = 0
+    fiscal_months_loaded: int = 0
     expense_imported: int = 0
     income_imported: int = 0
     anomalies: list = field(default_factory=list)      # rows we did NOT import
@@ -60,6 +62,7 @@ class Report:
         expense_anomalies = self._count_by_sheet(self.anomalies, EXPENSE_SHEET)
         return {
             "rates_loaded": self.rates_loaded,
+            "fiscal_months_loaded": self.fiscal_months_loaded,
             "expense_imported": self.expense_imported,
             "income_imported": self.income_imported,
             # Every non-blank income row is accounted for: imported OR quarantined.
@@ -107,6 +110,33 @@ def load_rates(conn: sqlite3.Connection, wb) -> int:
                ON CONFLICT(currency_id, rate_date) DO UPDATE
                    SET rate_to_base = excluded.rate_to_base""",
             (ccy[cu]["id"], iso, money.rate_to_str(rt)),
+        )
+        count += 1
+    conn.commit()
+    return count
+
+
+def load_fiscal_months(conn: sqlite3.Connection, wb, ccy: dict) -> int:
+    """Import the 统计 sheet's manual inputs (财政月 + 信用卡金额, USD) into
+    fiscal_month. The derived columns (总支出/换算/占比) are recomputed, not stored."""
+    if STATS_SHEET not in wb.sheetnames:
+        return 0
+    usd = ccy.get("美元") or ccy.get("USD")
+    ws = wb[STATS_SHEET]
+    count = 0
+    for r in range(2, ws.max_row + 1):
+        iso = _iso(ws.cell(row=r, column=1).value)   # A: 财政月 (the 5th)
+        if iso is None:
+            continue
+        cc = money.parse_decimal(ws.cell(row=r, column=5).value)  # E: 信用卡金额 (USD)
+        minor = money.to_minor(cc if cc is not None else 0, usd["minor_unit"])
+        conn.execute(
+            """INSERT INTO fiscal_month (period_end, credit_card_amount_minor, credit_card_ccy_id)
+               VALUES (?, ?, ?)
+               ON CONFLICT(period_end) DO UPDATE SET
+                   credit_card_amount_minor = excluded.credit_card_amount_minor,
+                   credit_card_ccy_id = excluded.credit_card_ccy_id""",
+            (iso, minor, usd["id"]),
         )
         count += 1
     conn.commit()
@@ -253,6 +283,7 @@ def import_workbook(conn: sqlite3.Connection,
     try:
         report.rates_loaded = load_rates(conn, wb)
         ccy = currency_id_map(conn)
+        report.fiscal_months_loaded = load_fiscal_months(conn, wb, ccy)
         cats = _CategoryCache(conn)
         base_id = rates.get_base_currency_id(conn)
         report.expense_imported = _import_sheet(
