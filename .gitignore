@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# App data (generated; xlsx is the user's master)
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+backend/data/*.json
+backend/data/backups/
+
+# Node / frontend (added in later phases)
+node_modules/
+dist/
+
+# Scratch
+_*.txt

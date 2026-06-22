@@ -61,7 +61,9 @@ CREATE TABLE txn (
     external_uid         TEXT    NOT NULL UNIQUE, -- stable id written to xlsx/JSON
     txn_date             TEXT    NOT NULL,        -- 'YYYY-MM-DD'
     direction            TEXT    NOT NULL CHECK (direction IN ('expense','income')),
-    amount_minor         INTEGER NOT NULL CHECK (amount_minor >= 0),
+    -- Negatives allowed: rebates / "被请客" / net-negative entries exist in the
+    -- ledger and must flow into fiscal-month SUMIFS exactly as the workbook does.
+    amount_minor         INTEGER NOT NULL,
     currency_id          INTEGER NOT NULL REFERENCES currency(id),
     content              TEXT    NOT NULL DEFAULT '',
     category_id          INTEGER REFERENCES category(id),
