@@ -12,8 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import config
-
 # Tables exported, in dependency order.
 TABLES = [
     "currency", "exchange_rate", "category", "person",
@@ -22,8 +20,23 @@ TABLES = [
 ]
 
 
+def mirror_path_for(conn: sqlite3.Connection) -> Path:
+    """JSON mirror path derived from the connection's own DB file, so a temp DB
+    mirrors next to itself and never overwrites the real data/cashlog.json.
+
+    Raises for an in-memory database (no file) rather than silently defaulting to
+    the real mirror — callers using :memory: must pass an explicit path."""
+    row = conn.execute("SELECT file FROM pragma_database_list WHERE name = 'main'").fetchone()
+    db_file = row[0] if row else ""
+    if not db_file:
+        raise ValueError(
+            "cannot derive a JSON mirror path for an in-memory database; "
+            "pass an explicit path to export_json()")
+    return Path(db_file).with_suffix(".json")
+
+
 def export_json(conn: sqlite3.Connection, path: Optional[Path] = None) -> Path:
-    out_path = Path(path) if path else config.JSON_MIRROR_PATH
+    out_path = Path(path) if path else mirror_path_for(conn)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {

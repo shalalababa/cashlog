@@ -10,8 +10,10 @@
   diff_from_xlsx  —  "从表格同步" preview: xlsx -> proposed changes. Matches rows
                      by _cashlog_uid (so row reorder is a no-op) and by content
                      hash (so unchanged rows are skipped). Classifies each row as
-                     new / modified / conflict / unknown_uid / anomaly, and DB
-                     rows missing from the sheet as deletions. Applies nothing.
+                     new / modified / conflict / unknown_uid / anomaly. A DB row
+                     missing from the sheet is a deletion only if it was synced
+                     before (last_synced_at set); an app-created row not yet
+                     exported goes to db_only, never deleted. Applies nothing.
 
   apply_diff      —  Applies new + modified (deletions/conflicts are opt-in).
 
@@ -75,7 +77,7 @@ def _db_hash(direction: str, txn_date: str, amount_minor: int, code: str,
 def _fetch_txns(conn: sqlite3.Connection, direction: str) -> list:
     return conn.execute(
         """SELECT t.id, t.external_uid, t.txn_date, t.amount_minor, t.content,
-                  t.note, t.rate_used, t.last_xlsx_hash, t.revision,
+                  t.note, t.rate_used, t.last_xlsx_hash, t.last_synced_at, t.revision,
                   cur.code AS code, cur.name AS ccy_name, cur.minor_unit,
                   c.name AS cat_name
            FROM   txn t
@@ -251,6 +253,7 @@ class SyncDiff:
     conflict: list = field(default_factory=list)
     unknown_uid: list = field(default_factory=list)
     anomalies: list = field(default_factory=list)
+    db_only: list = field(default_factory=list)   # in DB, never synced to xlsx yet
     unchanged: int = 0
 
     def summary(self) -> dict:
@@ -258,7 +261,7 @@ class SyncDiff:
             "new": len(self.new), "modified": len(self.modified),
             "deleted": len(self.deleted), "conflict": len(self.conflict),
             "unknown_uid": len(self.unknown_uid), "anomalies": len(self.anomalies),
-            "unchanged": self.unchanged,
+            "db_only": len(self.db_only), "unchanged": self.unchanged,
         }
 
 
@@ -289,6 +292,7 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
             db_by_uid[t["external_uid"]] = {
                 "id": t["id"], "direction": direction, "current_hash": cur_hash,
                 "baseline": t["last_xlsx_hash"], "content": t["content"],
+                "synced": t["last_synced_at"] is not None,
             }
             in_scope_uids[direction].add(t["external_uid"])
 
@@ -353,8 +357,15 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
         for direction in DATA_SHEETS:
             for uid in in_scope_uids[direction] - seen:
                 rec = db_by_uid[uid]
-                diff.deleted.append({"uid": uid, "txn_id": rec["id"],
-                                     "direction": direction, "content": rec["content"]})
+                entry = {"uid": uid, "txn_id": rec["id"],
+                         "direction": direction, "content": rec["content"]}
+                # Only rows that were previously written to the workbook can be a
+                # deletion. A row created in the app but not yet "同步到表格" is
+                # simply unsynced — never a delete candidate.
+                if rec["synced"]:
+                    diff.deleted.append(entry)
+                else:
+                    diff.db_only.append(entry)
     finally:
         wb.close()
     return diff

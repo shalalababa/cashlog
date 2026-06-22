@@ -16,7 +16,10 @@ from . import config
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # check_same_thread=False: FastAPI may run an endpoint and its dependency
+    # cleanup on different threadpool threads. Each request still gets its own
+    # connection (never shared concurrently), so this is safe.
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn

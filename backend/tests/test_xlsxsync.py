@@ -135,6 +135,21 @@ def test_export_clears_stale_template_rows():
     assert s["unchanged"] == 4
 
 
+def test_unsynced_db_only_row_is_not_a_deletion():
+    # Regression: a row created in the app but not yet "同步到表格" (last_synced_at
+    # NULL) must NOT be a deletion candidate just because it's absent from xlsx.
+    from cashlog import service
+    _, conn, xlsx = _build_env()
+    _export(conn, xlsx)  # the 4 seed rows are now synced
+    service.create_txn(conn, {"date": "2024-02-01", "direction": "expense",
+                              "amount": "3", "currency": "CNY", "content": "web新增"},
+                       write_json=False)
+    s = xlsxsync.diff_from_xlsx(conn, xlsx).summary()
+    assert s["deleted"] == 0, "an unsynced web-new row must not be flagged for deletion"
+    assert s["db_only"] == 1
+    assert s["unchanged"] == 4
+
+
 def test_write_failure_leaves_db_unmarked():
     d, conn, xlsx = _build_env()
     _export(conn, xlsx)

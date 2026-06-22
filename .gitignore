@@ -17,3 +17,4 @@ dist/
 
 # Scratch
 _*.txt
+*.log
