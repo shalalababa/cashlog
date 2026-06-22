@@ -85,6 +85,90 @@ export interface TxnInput {
   aa_settled: boolean;
 }
 
+export interface Person {
+  id: number;
+  name: string;
+  initial: string | null;
+  is_self: number;
+  active: number;
+}
+
+export interface Participant {
+  person_id: number;
+  name?: string | null;
+  weight?: string | null;
+  fixed_amount?: string | null;
+  owed?: string;
+  owed_minor?: number;
+}
+
+export interface TxnAA {
+  txn_id: number;
+  is_aa: boolean;
+  payer_id: number | null;
+  payer: string | null;
+  aa_settled: boolean;
+  participants: Participant[];
+}
+
+export interface UnsettledGroup {
+  currency: string;
+  minor_unit: number;
+  txns: {
+    id: number;
+    date: string;
+    content: string;
+    amount: string;
+    payer_id: number | null;
+    payer: string | null;
+    participants: { person_id: number; name: string | null; owed: string }[];
+  }[];
+}
+
+export interface SettlementGroup {
+  currency: string;
+  balances: { person_id: number; name: string | null; net: string }[];
+  transfers: { from: number; from_name: string | null; to: number; to_name: string | null; amount: string }[];
+  txn_ids: number[];
+}
+
+export interface Candidate {
+  id: number;
+  date: string;
+  content: string;
+  direction: string;
+  currency: string;
+  amount: string;
+}
+
+export interface SessionSummary {
+  id: number;
+  name: string | null;
+  currency: string;
+  created_at: string;
+}
+
+export interface SessionItem {
+  id?: number;
+  label: string | null;
+  pretax: string;
+  shares: { person_id: number; name?: string | null; weight?: string | null }[];
+}
+
+export interface Session {
+  id: number;
+  name: string | null;
+  currency: string;
+  minor_unit: number;
+  payer_id: number | null;
+  payer: string | null;
+  total_with_tax: string;
+  tax_amount: string;
+  pretax_total: string;
+  items: SessionItem[];
+  result: { person_id: number; name: string | null; amount: string }[];
+}
+
 export interface Filters {
   direction: string;
   search: string;

@@ -1,4 +1,20 @@
-import type { Category, Meta, RateInfo, Suggestion, Txn, TxnInput, TxnPage } from "./types";
+import type {
+  Candidate,
+  Category,
+  Meta,
+  Participant,
+  Person,
+  RateInfo,
+  Session,
+  SessionSummary,
+  SettlementGroup,
+  Suggestion,
+  Txn,
+  TxnAA,
+  TxnInput,
+  TxnPage,
+  UnsettledGroup,
+} from "./types";
 
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -50,4 +66,40 @@ export const api = {
 
   updateCategory: (id: number, body: Partial<Category>) =>
     req<Category>(`/api/categories/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+
+  // --- AA: people ---
+  persons: () => req<Person[]>("/api/persons"),
+  createPerson: (name: string, initial?: string) =>
+    req<Person>("/api/persons", { method: "POST", body: JSON.stringify({ name, initial }) }),
+  updatePerson: (id: number, body: Partial<Person>) =>
+    req<Person>(`/api/persons/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+
+  // --- AA: per-transaction ---
+  getTxnAA: (id: number) => req<TxnAA>(`/api/txns/${id}/aa`),
+  setTxnAA: (id: number, body: { payer_id: number | null; participants: Participant[]; settled: boolean }) =>
+    req<TxnAA>(`/api/txns/${id}/aa`, { method: "PUT", body: JSON.stringify(body) }),
+  clearTxnAA: (id: number) => req<TxnAA>(`/api/txns/${id}/aa`, { method: "DELETE" }),
+
+  // --- AA: settlement ---
+  unsettled: () => req<UnsettledGroup[]>("/api/aa/unsettled"),
+  settlement: (txn_ids?: number[]) =>
+    req<SettlementGroup[]>("/api/aa/settlement", { method: "POST", body: JSON.stringify({ txn_ids: txn_ids ?? null }) }),
+  settle: (txn_ids: number[]) =>
+    req<{ settled: number }>("/api/aa/settle", { method: "POST", body: JSON.stringify({ txn_ids }) }),
+
+  // --- AA: candidates ---
+  candidates: () => req<Candidate[]>("/api/aa/candidates"),
+  structure: (body: { txn_ids: number[]; payer_id: number; participant_ids: number[]; settled?: boolean }) =>
+    req<{ structured: number }>("/api/aa/structure", { method: "POST", body: JSON.stringify(body) }),
+
+  // --- AA: calculator ---
+  sessions: () => req<SessionSummary[]>("/api/aa/sessions"),
+  getSession: (id: number) => req<Session>(`/api/aa/sessions/${id}`),
+  saveSession: (body: any) =>
+    body.id
+      ? req<Session>(`/api/aa/sessions/${body.id}`, { method: "PUT", body: JSON.stringify(body) })
+      : req<Session>("/api/aa/sessions", { method: "POST", body: JSON.stringify(body) }),
+  deleteSession: (id: number) => req<void>(`/api/aa/sessions/${id}`, { method: "DELETE" }),
+  generateTxn: (id: number, body: { date: string; content: string; category_id: number | null }) =>
+    req<Txn>(`/api/aa/sessions/${id}/generate`, { method: "POST", body: JSON.stringify(body) }),
 };

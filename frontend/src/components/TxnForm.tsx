@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "../api";
-import type { Category, Currency, RateInfo, Txn, TxnInput } from "../types";
+import type { Category, Currency, Person, RateInfo, Txn, TxnInput } from "../types";
 import ContentAutocomplete from "./ContentAutocomplete";
+import AAEditor, { type AAValue } from "./AAEditor";
+
+const EMPTY_AA: AAValue = { payerId: null, splitMode: "equal", members: [], fixed: {}, settled: false };
 
 interface Props {
   currencies: Currency[];
@@ -48,8 +51,31 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
   const [rate, setRate] = useState<RateInfo | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [persons, setPersons] = useState<Person[]>([]);
+  const [aa, setAA] = useState<AAValue>(EMPTY_AA);
 
   const set = (patch: Partial<TxnInput>) => setForm((f) => ({ ...f, ...patch }));
+
+  const loadPersons = () => api.persons().then(setPersons).catch(() => setPersons([]));
+  useEffect(() => {
+    loadPersons();
+  }, []);
+
+  // Prefill AA details when editing an existing AA transaction.
+  useEffect(() => {
+    if (editing?.is_aa) {
+      api.getTxnAA(editing.id).then((info) => {
+        const anyFixed = info.participants.some((p) => p.fixed_amount != null);
+        setAA({
+          payerId: info.payer_id,
+          splitMode: anyFixed ? "fixed" : "equal",
+          members: info.participants.map((p) => p.person_id),
+          fixed: Object.fromEntries(info.participants.map((p) => [p.person_id, p.fixed_amount ?? p.owed ?? ""])),
+          settled: info.aa_settled,
+        });
+      });
+    }
+  }, [editing]);
 
   // Live rate lookup for the conversion preview.
   useEffect(() => {
@@ -84,11 +110,38 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
       setError("请输入有效金额");
       return;
     }
+    if (form.is_aa) {
+      if (aa.members.length === 0) {
+        setError("AA 需要至少一名参与人");
+        return;
+      }
+      if (aa.payerId == null) {
+        setError("请选择付款人");
+        return;
+      }
+      if (aa.splitMode === "fixed") {
+        const sum = aa.members.reduce((s, id) => s + (parseFloat(aa.fixed[id] ?? "") || 0), 0);
+        if (Math.abs(sum - amt) > 0.001) {
+          setError("自定义分摊合计需与金额相等");
+          return;
+        }
+      }
+    }
     setSaving(true);
     try {
-      const saved = editing
-        ? await api.updateTxn(editing.id, form)
-        : await api.createTxn(form);
+      const saved = editing ? await api.updateTxn(editing.id, form) : await api.createTxn(form);
+      if (form.is_aa) {
+        await api.setTxnAA(saved.id, {
+          payer_id: aa.payerId,
+          settled: aa.settled,
+          participants: aa.members.map((id) => ({
+            person_id: id,
+            ...(aa.splitMode === "fixed" ? { fixed_amount: aa.fixed[id] ?? "0" } : {}),
+          })),
+        });
+      } else if (editing?.is_aa) {
+        await api.clearTxnAA(saved.id);
+      }
       onSaved(saved);
     } catch (e) {
       setError((e as Error).message);
@@ -119,7 +172,7 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
               </button>
               <button
                 className={form.direction === "income" ? "active" : ""}
-                onClick={() => set({ direction: "income", category_id: null })}
+                onClick={() => set({ direction: "income", category_id: null, is_aa: false })}
               >
                 入账
               </button>
@@ -180,22 +233,23 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
             <input value={form.note ?? ""} onChange={(e) => set({ note: e.target.value })} />
           </div>
 
-          <div className="field full" style={{ flexDirection: "row", gap: 18, alignItems: "center" }}>
-            <label className="check">
-              <input type="checkbox" checked={form.is_aa} onChange={(e) => set({ is_aa: e.target.checked })} />
-              AA
-            </label>
-            {form.is_aa && (
+          {form.direction === "expense" && (
+            <div className="field full">
               <label className="check">
-                <input
-                  type="checkbox"
-                  checked={form.aa_settled}
-                  onChange={(e) => set({ aa_settled: e.target.checked })}
-                />
-                已结清
+                <input type="checkbox" checked={form.is_aa} onChange={(e) => set({ is_aa: e.target.checked })} />
+                这是一笔 AA
               </label>
-            )}
-          </div>
+              {form.is_aa && (
+                <AAEditor
+                  persons={persons}
+                  amount={form.amount}
+                  value={aa}
+                  onChange={setAA}
+                  onPersonsChanged={loadPersons}
+                />
+              )}
+            </div>
+          )}
 
           <div className="field full conv-hint">
             {preview && <span className={stale ? "stale" : ""}>{preview}{stale ? " · 汇率较旧" : ""}</span>}

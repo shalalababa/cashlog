@@ -6,6 +6,7 @@ import FiltersBar from "./components/Filters";
 import TxnTable from "./components/TxnTable";
 import TxnForm from "./components/TxnForm";
 import ManageView from "./components/ManageView";
+import AAView from "./components/AAView";
 
 const EMPTY_FILTERS: Filters = {
   direction: "",
@@ -22,7 +23,7 @@ const LIMIT = 50;
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [view, setView] = useState<"list" | "manage">("list");
+  const [view, setView] = useState<"list" | "aa" | "manage">("list");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sort, setSort] = useState("date");
   const [order, setOrder] = useState("desc");
@@ -126,8 +127,11 @@ export default function App() {
           <button className={`tab ${view === "list" ? "active" : ""}`} onClick={() => setView("list")}>
             账目
           </button>
+          <button className={`tab ${view === "aa" ? "active" : ""}`} onClick={() => setView("aa")}>
+            AA
+          </button>
           <button className={`tab ${view === "manage" ? "active" : ""}`} onClick={() => setView("manage")}>
-            分类 / 币种
+            分类 / 币种 / 人
           </button>
         </div>
         <div className="spacer" />
@@ -162,6 +166,8 @@ export default function App() {
             onDelete={onDelete}
           />
         </>
+      ) : view === "aa" ? (
+        <AAView currencies={meta.currencies} categories={meta.categories} notify={notify} />
       ) : (
         <ManageView
           categories={meta.categories}

@@ -6,6 +6,7 @@ dev server; if a built frontend exists it is served from the same origin.
 """
 from __future__ import annotations
 
+import sqlite3
 from typing import Optional
 
 from datetime import date as _date
@@ -14,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from . import config, db, service
+from . import aa_service, config, db, service
 
 app = FastAPI(title="Cashlog API", version="0.1.0")
 app.add_middleware(
@@ -182,6 +183,209 @@ def update_category(cat_id: int, body: CategoryPatch, conn=Depends(get_conn)):
         return service.update_category(conn, cat_id, data)
     except KeyError:
         raise HTTPException(status_code=404, detail="not found")
+
+
+# --- AA: people -------------------------------------------------------------
+class PersonIn(BaseModel):
+    name: str
+    initial: Optional[str] = None
+
+
+class PersonPatch(BaseModel):
+    name: Optional[str] = None
+    initial: Optional[str] = None
+    active: Optional[bool] = None
+
+
+@app.get("/api/persons")
+def list_persons(active_only: bool = False, conn=Depends(get_conn)):
+    return aa_service.list_persons(conn, active_only)
+
+
+@app.post("/api/persons", status_code=201)
+def create_person(body: PersonIn, conn=Depends(get_conn)):
+    try:
+        return aa_service.create_person(conn, body.name, body.initial)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/api/persons/{person_id}")
+def update_person(person_id: int, body: PersonPatch, conn=Depends(get_conn)):
+    data = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        return aa_service.update_person(conn, person_id, data)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# --- AA: structured AA on a transaction -------------------------------------
+class ParticipantIn(BaseModel):
+    person_id: int
+    weight: Optional[str] = None
+    fixed_amount: Optional[str] = None
+
+
+class TxnAAIn(BaseModel):
+    payer_id: Optional[int] = None
+    participants: list[ParticipantIn]
+    settled: bool = False
+
+
+@app.get("/api/txns/{txn_id}/aa")
+def get_txn_aa(txn_id: int, conn=Depends(get_conn)):
+    try:
+        return aa_service.get_txn_aa(conn, txn_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="not found")
+
+
+@app.put("/api/txns/{txn_id}/aa")
+def set_txn_aa(txn_id: int, body: TxnAAIn, conn=Depends(get_conn)):
+    try:
+        return aa_service.set_txn_aa(conn, txn_id, body.payer_id,
+                                     [p.model_dump() for p in body.participants], body.settled)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="not found")
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/txns/{txn_id}/aa")
+def clear_txn_aa(txn_id: int, conn=Depends(get_conn)):
+    try:
+        return aa_service.clear_txn_aa(conn, txn_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="not found")
+
+
+# --- AA: settlement ---------------------------------------------------------
+class TxnIds(BaseModel):
+    txn_ids: Optional[list[int]] = None
+
+
+@app.get("/api/aa/unsettled")
+def aa_unsettled(conn=Depends(get_conn)):
+    return aa_service.list_unsettled(conn)
+
+
+@app.post("/api/aa/settlement")
+def aa_settlement(body: TxnIds, conn=Depends(get_conn)):
+    return aa_service.compute_settlement(conn, body.txn_ids)
+
+
+@app.post("/api/aa/settle")
+def aa_settle(body: TxnIds, conn=Depends(get_conn)):
+    return {"settled": aa_service.settle(conn, body.txn_ids or [])}
+
+
+# --- AA: candidates + batch structuring -------------------------------------
+class StructureIn(BaseModel):
+    txn_ids: list[int]
+    payer_id: int
+    participant_ids: list[int]
+    settled: bool = False
+
+
+@app.get("/api/aa/candidates")
+def aa_candidates(conn=Depends(get_conn)):
+    return aa_service.candidates(conn)
+
+
+@app.post("/api/aa/structure")
+def aa_structure(body: StructureIn, conn=Depends(get_conn)):
+    try:
+        return {"structured": aa_service.batch_structure(
+            conn, body.txn_ids, body.payer_id, body.participant_ids, settled=body.settled)}
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# --- AA: receipt calculator -------------------------------------------------
+class ShareIn(BaseModel):
+    person_id: int
+    weight: Optional[str] = None
+
+
+class ItemIn(BaseModel):
+    label: Optional[str] = None
+    pretax: str
+    person_ids: Optional[list[int]] = None
+    shares: Optional[list[ShareIn]] = None
+
+
+class SessionIn(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    currency: str
+    payer_id: Optional[int] = None
+    total_with_tax: str
+    items: list[ItemIn] = []
+
+
+class GenerateIn(BaseModel):
+    date: str
+    content: str
+    category_id: Optional[int] = None
+
+
+def _session_payload(body: SessionIn) -> dict:
+    return {
+        "id": body.id, "name": body.name, "currency": body.currency,
+        "payer_id": body.payer_id, "total_with_tax": body.total_with_tax,
+        "items": [{"label": it.label, "pretax": it.pretax,
+                   "person_ids": it.person_ids,
+                   "shares": [s.model_dump() for s in it.shares] if it.shares else None}
+                  for it in body.items],
+    }
+
+
+@app.get("/api/aa/sessions")
+def aa_sessions(conn=Depends(get_conn)):
+    return aa_service.list_sessions(conn)
+
+
+@app.get("/api/aa/sessions/{session_id}")
+def aa_get_session(session_id: int, conn=Depends(get_conn)):
+    try:
+        return aa_service.get_session(conn, session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="not found")
+
+
+@app.post("/api/aa/sessions", status_code=201)
+def aa_create_session(body: SessionIn, conn=Depends(get_conn)):
+    try:
+        return aa_service.save_session(conn, _session_payload(body))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put("/api/aa/sessions/{session_id}")
+def aa_update_session(session_id: int, body: SessionIn, conn=Depends(get_conn)):
+    payload = _session_payload(body)
+    payload["id"] = session_id
+    try:
+        return aa_service.save_session(conn, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/aa/sessions/{session_id}", status_code=204)
+def aa_delete_session(session_id: int, conn=Depends(get_conn)):
+    if not aa_service.delete_session(conn, session_id):
+        raise HTTPException(status_code=404, detail="not found")
+
+
+@app.post("/api/aa/sessions/{session_id}/generate", status_code=201)
+def aa_generate_txn(session_id: int, body: GenerateIn, conn=Depends(get_conn)):
+    try:
+        return aa_service.generate_txn_from_session(
+            conn, session_id, date=body.date, content=body.content, category_id=body.category_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # --- optionally serve a built frontend --------------------------------------

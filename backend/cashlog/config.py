@@ -2,8 +2,7 @@
 
 Kept dependency-free so every other module can import it.
 """
-from __future__ import annotations
-
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -16,9 +15,12 @@ REPO_ROOT = BACKEND_DIR.parent
 DOCS_DIR = REPO_ROOT / "docs"
 SCHEMA_SQL = DOCS_DIR / "schema.sql"
 
-DATA_DIR = BACKEND_DIR / "data"
-DB_PATH = DATA_DIR / "cashlog.db"
-JSON_MIRROR_PATH = DATA_DIR / "cashlog.json"
+# DB location can be overridden (CASHLOG_DB) for tests / separate profiles.
+# JSON mirror and backups follow the DB so a temp DB never touches real data.
+DB_PATH = Path(os.environ["CASHLOG_DB"]) if os.environ.get("CASHLOG_DB") \
+    else BACKEND_DIR / "data" / "cashlog.db"
+DATA_DIR = DB_PATH.parent
+JSON_MIRROR_PATH = DB_PATH.with_suffix(".json")
 REPORT_PATH = DATA_DIR / "migration_report.json"
 BACKUP_DIR = DATA_DIR / "backups"
 

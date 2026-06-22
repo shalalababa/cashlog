@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Category, Currency } from "../types";
+import type { Category, Currency, Person } from "../types";
 
 interface Props {
   categories: Category[];
@@ -17,7 +17,53 @@ export default function ManageView({ categories, currencies, onChanged }: Props)
       <div>
         <CategorySection kind="income" title="入账分类" categories={categories} onChanged={onChanged} />
         <div style={{ height: 18 }} />
+        <PeopleSection />
+        <div style={{ height: 18 }} />
         <CurrencySection currencies={currencies} />
+      </div>
+    </div>
+  );
+}
+
+function PeopleSection() {
+  const [people, setPeople] = useState<Person[]>([]);
+  const [name, setName] = useState("");
+  const load = () => api.persons().then(setPeople).catch(() => setPeople([]));
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function add() {
+    if (!name.trim()) return;
+    try {
+      await api.createPerson(name.trim());
+      setName("");
+      load();
+    } catch {
+      /* duplicate */
+    }
+  }
+
+  return (
+    <div className="card" style={{ padding: 14 }}>
+      <div className="section-title">AA 参与人</div>
+      <div className="cat-list">
+        {people.map((p) => (
+          <div className="cat-row" key={p.id} style={{ opacity: p.active ? 1 : 0.45 }}>
+            <span className="name">{p.name}</span>
+            {p.is_self === 1 && <span className="badge aa">本人</span>}
+            <span className="grow" />
+            {p.is_self !== 1 && (
+              <button className="btn sm ghost" onClick={() => api.updatePerson(p.id, { active: p.active ? 0 : 1 }).then(load)}>
+                {p.active ? "停用" : "启用"}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="add-cat">
+        <input placeholder="新参与人姓名" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className="btn primary sm" onClick={add}>添加</button>
       </div>
     </div>
   );
