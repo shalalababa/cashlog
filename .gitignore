@@ -18,3 +18,7 @@ dist/
 # Scratch
 _*.txt
 *.log
+
+# Skills
+.claude/
+.codex/

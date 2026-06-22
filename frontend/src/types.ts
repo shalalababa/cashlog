@@ -169,6 +169,43 @@ export interface Session {
   result: { person_id: number; name: string | null; amount: string }[];
 }
 
+export interface FiscalMonth {
+  period_end: string;
+  range_start: string;
+  range_end: string;          // inclusive, for chart range calls
+  total_cny: number;
+  total_usd: number | null;
+  credit_card: number;
+  credit_card_currency: string | null;
+  credit_card_cny: number | null;
+  usd_rate: number | null;
+  ratio: number | null;
+  rate_stale: boolean;
+}
+
+export interface CategoryStat {
+  category_id: number | null;
+  category: string;
+  color: string;
+  exclude_stats: boolean;
+  total: number;
+  count: number;
+}
+
+export interface CategorySeries {
+  category_id: number | null;
+  category: string;
+  color: string;
+  exclude_stats: boolean;
+  values: number[];
+}
+
+export interface CategoryTrend {
+  periods: string[];
+  granularity: string;
+  series: CategorySeries[];
+}
+
 export interface Filters {
   direction: string;
   search: string;

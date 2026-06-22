@@ -1,6 +1,9 @@
 import type {
   Candidate,
   Category,
+  CategoryStat,
+  CategoryTrend,
+  FiscalMonth,
   Meta,
   Participant,
   Person,
@@ -102,4 +105,13 @@ export const api = {
   deleteSession: (id: number) => req<void>(`/api/aa/sessions/${id}`, { method: "DELETE" }),
   generateTxn: (id: number, body: { date: string; content: string; category_id: number | null }) =>
     req<Txn>(`/api/aa/sessions/${id}/generate`, { method: "POST", body: JSON.stringify(body) }),
+
+  // --- stats ---
+  fiscal: () => req<FiscalMonth[]>("/api/stats/fiscal"),
+  categoryBreakdown: (date_from: string, date_to: string) =>
+    req<CategoryStat[]>(`/api/stats/categories?date_from=${date_from}&date_to=${date_to}`),
+  categoryTrend: (date_from: string, date_to: string, granularity: string) =>
+    req<CategoryTrend>(
+      `/api/stats/category-trend?date_from=${date_from}&date_to=${date_to}&granularity=${granularity}`
+    ),
 };

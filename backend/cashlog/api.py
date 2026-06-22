@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from . import aa_service, config, db, service
+from . import aa_service, config, db, service, stats
 
 app = FastAPI(title="Cashlog API", version="0.1.0")
 app.add_middleware(
@@ -385,6 +385,31 @@ def aa_generate_txn(session_id: int, body: GenerateIn, conn=Depends(get_conn)):
         return aa_service.generate_txn_from_session(
             conn, session_id, date=body.date, content=body.content, category_id=body.category_id)
     except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# --- statistics + visualization ---------------------------------------------
+@app.get("/api/stats/fiscal")
+def stats_fiscal(conn=Depends(get_conn)):
+    return stats.fiscal_months(conn)
+
+
+@app.get("/api/stats/categories")
+def stats_categories(date_from: str, date_to: str,
+                     direction: str = "expense", conn=Depends(get_conn)):
+    try:
+        return stats.category_breakdown(conn, date_from, date_to, direction=direction)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/stats/category-trend")
+def stats_category_trend(date_from: str, date_to: str, granularity: str = "month",
+                         direction: str = "expense", conn=Depends(get_conn)):
+    try:
+        return stats.category_trend(conn, date_from, date_to,
+                                    granularity=granularity, direction=direction)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
