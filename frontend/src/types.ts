@@ -216,3 +216,86 @@ export interface Filters {
   aa: string;
   uncategorized: boolean;
 }
+
+// --- budgets ----------------------------------------------------------------
+export interface Budget {
+  id: number;
+  category_id: number | null;
+  amount_type: "absolute" | "percent";
+  amount: string | null;       // major CNY (absolute)
+  amount_micro: number | null;
+  percent: string | null;      // share of overall (percent)
+  note: string | null;
+  category?: string | null;
+  color?: string | null;
+}
+
+export interface BudgetList {
+  overall: Budget | null;
+  categories: Budget[];
+}
+
+export interface BudgetProgress {
+  limit: string | null;
+  limit_micro: number | null;
+  actual: string;
+  actual_micro: number;
+  pct: number | null;          // fraction (actual / limit)
+  remaining: string | null;
+  over: boolean;
+}
+
+export interface OverallStatus extends BudgetProgress {
+  budget_id: number | null;
+}
+
+export interface CategoryBudgetStatus extends BudgetProgress {
+  category_id: number | null;
+  category: string | null;
+  color: string | null;
+  amount_type: "absolute" | "percent";
+  percent: string | null;
+  budget_id: number;
+}
+
+export interface BudgetStatus {
+  period_end: string;
+  range_start: string;
+  range_end: string;
+  has_overall: boolean;
+  overall: OverallStatus;
+  categories: CategoryBudgetStatus[];
+}
+
+export interface BudgetInput {
+  category_id: number | null;
+  amount_type?: "absolute" | "percent";
+  amount?: string | null;
+  percent?: string | null;
+  note?: string | null;
+}
+
+// --- dashboard --------------------------------------------------------------
+export interface MonthSummary {
+  period_end: string;
+  range_start: string;
+  range_end: string;
+  total_micro: number;
+  total_cny: number;
+  delta?: number;
+  delta_pct?: number | null;
+}
+
+export interface AAUnsettledSummary {
+  count: number;
+  by_currency: { currency: string; count: number; amount: string }[];
+}
+
+export interface Dashboard {
+  today: string;
+  current: MonthSummary;
+  previous: MonthSummary;
+  top_categories: CategoryStat[];
+  budget: BudgetStatus;
+  aa_unsettled: AAUnsettledSummary;
+}

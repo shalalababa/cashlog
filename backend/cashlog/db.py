@@ -25,8 +25,23 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Apply additive, idempotent migrations on top of the schema.sql baseline.
+
+    Lets a database created in an earlier phase gain later tables (e.g. the P6
+    budget table) without a destructive rebuild. Each migration file uses
+    ``IF NOT EXISTS`` so re-running is a no-op.
+    """
+    mig_dir = config.MIGRATIONS_DIR
+    if not mig_dir.exists():
+        return
+    for path in sorted(mig_dir.glob("*.sql")):
+        conn.executescript(path.read_text(encoding="utf-8"))
+    conn.commit()
+
+
 def init_db(db_path: Optional[Path] = None, *, reset: bool = False) -> Path:
-    """Create the database from docs/schema.sql.
+    """Create the database from docs/schema.sql, then apply additive migrations.
 
     With reset=True the existing file is removed first.
     """
@@ -43,6 +58,7 @@ def init_db(db_path: Optional[Path] = None, *, reset: bool = False) -> Path:
     try:
         conn.executescript(schema_sql)
         conn.commit()
+        ensure_schema(conn)
     finally:
         conn.close()
     return path

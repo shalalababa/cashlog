@@ -15,6 +15,10 @@ backend/data/backups/
 node_modules/
 dist/
 
+# Desktop sidecar build (PyInstaller; regenerate with backend/scripts/build_sidecar.py)
+backend/.sidecar-venv/
+backend/build/
+
 # Scratch
 _*.txt
 *.log

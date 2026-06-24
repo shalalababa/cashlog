@@ -1,0 +1,18 @@
+<!doctype html>
+<!--
+  Tauri requires a non-empty `frontendDist` with an index.html to embed at build
+  time, but the Cashlog desktop shell does NOT serve its UI from here. The real,
+  built React app is bundled inside the backend sidecar and served over HTTP; the
+  webview is pointed straight at the backend (see src/main.rs). This placeholder
+  exists only to satisfy that build requirement and is never shown — if you can
+  read it, the webview failed to reach the backend.
+-->
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cashlog</title>
+  </head>
+  <body>
+    <p>正在启动 Cashlog…</p>
+  </body>
+</html>

@@ -182,3 +182,9 @@ CREATE TABLE setting (
     key    TEXT PRIMARY KEY,
     value  TEXT
 );
+
+-- ---------------------------------------------------------------------------
+-- Additive tables shipped after this baseline (applied by db.ensure_schema on
+-- top of this file; see docs/migrations/):
+--   0001_budget.sql  — P6 budgets (overall + per-category targets)
+-- ---------------------------------------------------------------------------

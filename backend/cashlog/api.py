@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from . import aa_service, config, db, service, stats
+from . import aa_service, budgets, config, dashboard, db, seed, service, stats
 
 app = FastAPI(title="Cashlog API", version="0.1.0")
 app.add_middleware(
@@ -23,6 +23,40 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _bootstrap_db() -> None:
+    """Make the configured database usable before serving requests.
+
+    * Fresh location (no ``category`` table — e.g. a first run of the desktop
+      build against an empty per-user data dir): create the baseline schema and
+      seed reference data so the app is immediately usable.
+    * Existing database: just bring it up to the latest additive schema (e.g.
+      the P6 budget table) so it gains new tables without a rebuild.
+
+    Both paths are idempotent — seeding uses ``ON CONFLICT`` upserts — so this is
+    safe to run on every startup and never disturbs the real ledger.
+    """
+    config.ensure_data_dirs()
+    conn = db.connect()
+    try:
+        has_core = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='category'"
+        ).fetchone()
+        if has_core:
+            db.ensure_schema(conn)
+            return
+    finally:
+        conn.close()
+
+    # Fresh database: build the baseline (schema.sql + migrations) then seed.
+    db.init_db()
+    conn = db.connect()
+    try:
+        seed.seed(conn)
+    finally:
+        conn.close()
 
 
 def get_conn():
@@ -413,8 +447,56 @@ def stats_category_trend(date_from: str, date_to: str, granularity: str = "month
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-# --- optionally serve a built frontend --------------------------------------
-_DIST = config.REPO_ROOT / "frontend" / "dist"
-if _DIST.exists():
+# --- budgets ----------------------------------------------------------------
+class BudgetIn(BaseModel):
+    category_id: Optional[int] = None       # null = overall budget
+    amount_type: str = "absolute"           # 'absolute' | 'percent'
+    amount: Optional[str] = None            # major CNY, for absolute
+    percent: Optional[str] = None           # share of overall, for percent
+    note: Optional[str] = None
+
+
+@app.get("/api/budgets")
+def get_budgets(conn=Depends(get_conn)):
+    return budgets.list_budgets(conn)
+
+
+@app.get("/api/budgets/status")
+def get_budget_status(period_end: Optional[str] = None, conn=Depends(get_conn)):
+    try:
+        return budgets.budget_status(conn, period_end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put("/api/budgets")
+def put_budget(body: BudgetIn, conn=Depends(get_conn)):
+    try:
+        return budgets.set_budget(conn, category_id=body.category_id,
+                                  amount_type=body.amount_type, amount=body.amount,
+                                  percent=body.percent, note=body.note)
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/budgets/{budget_id}", status_code=204)
+def delete_budget(budget_id: int, conn=Depends(get_conn)):
+    if not budgets.delete_budget(conn, budget_id):
+        raise HTTPException(status_code=404, detail="not found")
+
+
+# --- dashboard --------------------------------------------------------------
+@app.get("/api/dashboard")
+def get_dashboard(conn=Depends(get_conn)):
+    return dashboard.dashboard(conn)
+
+
+# --- serve the built frontend (same origin) ---------------------------------
+# Mounted last so it never shadows the `/api/...` routes above. When this exists
+# the webview can load the UI straight from the backend; the desktop sidecar
+# bundles `frontend/dist` precisely so the installed app serves a real UI here
+# instead of a bare 404. (html=True makes "/" return index.html.)
+if config.FRONTEND_DIST.is_dir():
     from fastapi.staticfiles import StaticFiles
-    app.mount("/", StaticFiles(directory=str(_DIST), html=True), name="frontend")
+    app.mount("/", StaticFiles(directory=str(config.FRONTEND_DIST), html=True),
+              name="frontend")

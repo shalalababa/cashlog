@@ -1,0 +1,16 @@
+[package]
+name = "cashlog"
+version = "0.1.0"
+description = "Cashlog — local-first accounting desktop shell"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[features]
+# Used by `tauri build` for the production custom protocol.
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,6 @@
+# Rust / Tauri build artifacts
+/target
+/gen/schemas
+
+# Bundled backend sidecar (built by backend/scripts/build_sidecar.py)
+/binaries

@@ -8,6 +8,8 @@ import TxnForm from "./components/TxnForm";
 import ManageView from "./components/ManageView";
 import AAView from "./components/AAView";
 import StatsView from "./components/StatsView";
+import BudgetView from "./components/BudgetView";
+import Dashboard from "./components/Dashboard";
 
 const EMPTY_FILTERS: Filters = {
   direction: "",
@@ -24,7 +26,7 @@ const LIMIT = 50;
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [view, setView] = useState<"list" | "aa" | "stats" | "manage">("list");
+  const [view, setView] = useState<"dashboard" | "list" | "aa" | "stats" | "budget" | "manage">("dashboard");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sort, setSort] = useState("date");
   const [order, setOrder] = useState("desc");
@@ -125,6 +127,9 @@ export default function App() {
       <div className="topbar">
         <div className="brand">Cash<span className="dot">·</span>log</div>
         <div className="tabs">
+          <button className={`tab ${view === "dashboard" ? "active" : ""}`} onClick={() => setView("dashboard")}>
+            概览
+          </button>
           <button className={`tab ${view === "list" ? "active" : ""}`} onClick={() => setView("list")}>
             账目
           </button>
@@ -133,6 +138,9 @@ export default function App() {
           </button>
           <button className={`tab ${view === "stats" ? "active" : ""}`} onClick={() => setView("stats")}>
             统计
+          </button>
+          <button className={`tab ${view === "budget" ? "active" : ""}`} onClick={() => setView("budget")}>
+            预算
           </button>
           <button className={`tab ${view === "manage" ? "active" : ""}`} onClick={() => setView("manage")}>
             分类 / 币种 / 人
@@ -144,7 +152,9 @@ export default function App() {
         )}
       </div>
 
-      {view === "list" ? (
+      {view === "dashboard" ? (
+        <Dashboard notify={notify} onNavigate={setView} />
+      ) : view === "list" ? (
         <>
           <FiltersBar
             filters={filters}
@@ -174,6 +184,8 @@ export default function App() {
         <AAView currencies={meta.currencies} categories={meta.categories} notify={notify} />
       ) : view === "stats" ? (
         <StatsView categories={meta.categories} notify={notify} />
+      ) : view === "budget" ? (
+        <BudgetView categories={meta.categories} notify={notify} />
       ) : (
         <ManageView
           categories={meta.categories}

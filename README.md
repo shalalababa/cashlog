@@ -43,8 +43,19 @@ python -m scripts.sync_from_xlsx --apply       # 应用新增+修改
 cd backend && python -m pytest tests -q
 ```
 
+## 桌面版（Tauri）
+桌面外壳见 [frontend/src-tauri/](frontend/src-tauri/)，构建与打包说明见 [docs/DESKTOP.md](docs/DESKTOP.md)。
+它启动同一套本地后端（默认绑定一个空闲端口，健康检查通过后才开窗，超时即退出），因此读写的
+就是同一份 SQLite/JSON/xlsx。后端用 PyInstaller 打成单文件 sidecar 随应用打包，构建好的前端
+也一并打进 sidecar 并由后端同源托管（界面即由它提供），**安装后双击即用、无需系统 Python**：
+```bash
+cd backend && python scripts/build_sidecar.py   # 1. 构建前端并在隔离 venv 里产出 sidecar
+cd frontend && npm run tauri build              # 2. 打 MSI/NSIS 安装包
+```
+> 需要 Rust 工具链；开发模式（`npm run tauri dev`）若未构建 sidecar 会回退到系统 Python 跑源码。
+
 ## 进度
-P1 数据核心、P2 xlsx 双向同步、P3 日常录入、P4 AA 套件（参与人/结构化 AA/未结清最优转账/小票计算器/历史候选批量结构化）、P5 统计与可视化（财政月统计 + 分类环形/矩形树图 + 支出趋势 + 分类金额/占比趋势）已完成。
-后续：P6 预算/仪表板。
+P1 数据核心、P2 xlsx 双向同步、P3 日常录入、P4 AA 套件（参与人/结构化 AA/未结清最优转账/小票计算器/历史候选批量结构化）、P5 统计与可视化（财政月统计 + 分类环形/矩形树图 + 支出趋势 + 分类金额/占比趋势）、P6 预算与仪表板（总体/分类预算，绝对值或占总预算百分比；首页概览：本月 vs 上月、主要分类、预算进度、AA 未结清提醒）+ 自包含 Tauri 桌面打包（PyInstaller sidecar，安装后无需系统 Python）已完成。
+后续：可选飞书云端镜像。
 
 > 提示：设置环境变量 `CASHLOG_DB=/path/to/other.db` 可让后端使用另一个数据库（测试或多套账本），JSON 镜像与备份会跟随该路径，不影响真实数据。

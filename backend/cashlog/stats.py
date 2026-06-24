@@ -59,6 +59,17 @@ def fiscal_range(period_end: str) -> tuple[str, str]:
     return _iso(edate(end, -1)), _iso(end)
 
 
+def current_fiscal_end(today: date) -> date:
+    """The ``period_end`` (a 5th) of the fiscal month ``today`` falls in.
+
+    The window is half-open ``[period_end - 1 month, period_end)`` so a date on
+    the 5th itself belongs to the *next* fiscal month. e.g. 2026-06-22 -> the
+    2026-07-05 close; 2026-06-03 -> the 2026-06-05 close.
+    """
+    this_close = date(today.year, today.month, config.FISCAL_DAY)
+    return this_close if today.day < config.FISCAL_DAY else edate(this_close, 1)
+
+
 # ---------------------------------------------------------------------------
 # Period bucketing (for trends)
 # ---------------------------------------------------------------------------
@@ -98,6 +109,43 @@ def _validate_direction(direction: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Reusable expense aggregations over a half-open ``[start, end_excl)`` window.
+# These mirror the 统计 SUMIFS so the dashboard / budgets stay consistent with
+# the fiscal-month engine instead of re-deriving the rules.
+# ---------------------------------------------------------------------------
+def expense_total_micro(conn: sqlite3.Connection, start: str, end_excl: str, *,
+                        exclude_flagged: bool = True) -> int:
+    """Sum of base_amount_micro for expenses in ``[start, end_excl)``.
+
+    With exclude_flagged (default) this is the headline fiscal total: it drops
+    ``exclude_stats`` categories (学费 / 特殊) but keeps uncategorized rows.
+    """
+    flag = "AND COALESCE(c.exclude_stats, 0) = 0" if exclude_flagged else ""
+    return conn.execute(
+        f"""SELECT COALESCE(SUM(COALESCE(t.base_amount_micro, 0)), 0) AS m
+            FROM   txn t
+            LEFT   JOIN category c ON c.id = t.category_id
+            WHERE  t.direction = 'expense'
+              AND  t.txn_date >= ? AND t.txn_date < ? {flag}""",
+        (start, end_excl)).fetchone()["m"]
+
+
+def category_total_micro(conn: sqlite3.Connection, category_id: int,
+                         start: str, end_excl: str) -> int:
+    """Sum of base_amount_micro for one category's expenses in ``[start, end_excl)``.
+
+    Used by per-category budget progress; a budget tracks the category as the
+    user defined it, so the exclude_stats flag is intentionally not applied here.
+    """
+    return conn.execute(
+        """SELECT COALESCE(SUM(COALESCE(base_amount_micro, 0)), 0) AS m
+           FROM   txn
+           WHERE  direction = 'expense' AND category_id = ?
+             AND  txn_date >= ? AND txn_date < ?""",
+        (category_id, start, end_excl)).fetchone()["m"]
+
+
+# ---------------------------------------------------------------------------
 # Fiscal-month statistics (replicates 统计)
 # ---------------------------------------------------------------------------
 def fiscal_months(conn: sqlite3.Connection) -> list[dict]:
@@ -107,14 +155,7 @@ def fiscal_months(conn: sqlite3.Connection) -> list[dict]:
         period_end = fm["period_end"]
         start, end_excl = fiscal_range(period_end)
 
-        micro = conn.execute(
-            """SELECT COALESCE(SUM(COALESCE(t.base_amount_micro, 0)), 0) AS m
-               FROM   txn t
-               LEFT   JOIN category c ON c.id = t.category_id
-               WHERE  t.direction = 'expense'
-                 AND  t.txn_date >= ? AND t.txn_date < ?
-                 AND  COALESCE(c.exclude_stats, 0) = 0""",
-            (start, end_excl)).fetchone()["m"]
+        micro = expense_total_micro(conn, start, end_excl)
         total_cny = money.base_micro_to_cny(micro)
 
         cc_id = fm["credit_card_ccy_id"]

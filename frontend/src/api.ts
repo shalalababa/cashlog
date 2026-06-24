@@ -1,8 +1,13 @@
 import type {
+  Budget,
+  BudgetInput,
+  BudgetList,
+  BudgetStatus,
   Candidate,
   Category,
   CategoryStat,
   CategoryTrend,
+  Dashboard,
   FiscalMonth,
   Meta,
   Participant,
@@ -114,4 +119,13 @@ export const api = {
     req<CategoryTrend>(
       `/api/stats/category-trend?date_from=${date_from}&date_to=${date_to}&granularity=${granularity}`
     ),
+
+  // --- budgets + dashboard ---
+  budgets: () => req<BudgetList>("/api/budgets"),
+  budgetStatus: (period_end?: string) =>
+    req<BudgetStatus>(`/api/budgets/status${period_end ? `?period_end=${period_end}` : ""}`),
+  setBudget: (body: BudgetInput) =>
+    req<Budget>("/api/budgets", { method: "PUT", body: JSON.stringify(body) }),
+  deleteBudget: (id: number) => req<void>(`/api/budgets/${id}`, { method: "DELETE" }),
+  dashboard: () => req<Dashboard>("/api/dashboard"),
 };

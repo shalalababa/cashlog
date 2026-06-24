@@ -79,6 +79,19 @@ def to_base_micro(amount_minor: int, minor_unit: int, rate_to_base: Number) -> i
     return int(micro)
 
 
+def cny_to_base_micro(amount_cny: Number) -> int:
+    """CNY major amount -> integer micro-units (CNY * 1_000_000).
+
+    The inverse of base_micro_to_cny, for values already denominated in CNY
+    (e.g. budgets) that need to be compared against the cached base_amount_micro.
+    """
+    dec = parse_decimal(amount_cny)
+    if dec is None:
+        raise ValueError(f"cannot parse amount: {amount_cny!r}")
+    micro = (dec * _MICRO).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    return int(micro)
+
+
 def base_micro_to_cny(base_micro: int) -> Decimal:
     """Micro-units -> CNY Decimal rounded to 2 dp (display / reconcile)."""
     return (Decimal(base_micro) / _MICRO).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

@@ -15,7 +15,7 @@ from typing import Optional
 # Tables exported, in dependency order.
 TABLES = [
     "currency", "exchange_rate", "category", "person",
-    "txn", "txn_participant", "fiscal_month",
+    "txn", "txn_participant", "fiscal_month", "budget",
     "aa_session", "aa_session_item", "aa_session_item_share", "setting",
 ]
 
@@ -45,7 +45,13 @@ def export_json(conn: sqlite3.Connection, path: Optional[Path] = None) -> Path:
             "exported_at": datetime.now(timezone.utc).isoformat(),
         }
     }
+    existing = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
     for table in TABLES:
+        # A table may be absent on a DB created before its migration ran; skip it
+        # rather than fail the whole mirror.
+        if table not in existing:
+            continue
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
         payload[table] = [dict(row) for row in rows]
 
