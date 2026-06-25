@@ -228,9 +228,9 @@ export default function StatsView({ categories, notify }: Props) {
         </span>
       </div>
 
-      {/* Fiscal-month table + chart (replaces 统计) */}
+      {/* Fiscal-month table + chart (replaces 统计). Kept after the interactive range charts. */}
       {fiscals.length > 0 && (
-        <div className="card stats-card">
+        <div className="card stats-card" style={{ order: 10 }}>
           <div className="section-title">财政月统计（区间 [上月5日, 本月5日)，排除 学费/特殊）</div>
           <EChart option={fiscalChartOption} height={240} />
           <div className="table-wrap">

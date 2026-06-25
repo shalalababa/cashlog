@@ -122,6 +122,22 @@ def test_rate_rejects_bad_date():
         assert raised, f"rate_for must reject date {bad!r}"
 
 
+def test_aa_filter_includes_legacy_text_candidates():
+    conn = _env()
+    legacy = service.create_txn(conn, {"date": "2024-03-05", "direction": "expense",
+                                       "amount": "10", "currency": "CNY",
+                                       "content": "Wholefoods 购物 AA"},
+                                write_json=False)
+    service.create_txn(conn, {"date": "2024-03-05", "direction": "expense",
+                              "amount": "10", "currency": "CNY",
+                              "content": "普通购物"}, write_json=False)
+    rows = service.list_txns(conn, aa="aa")["items"]
+    assert [r["id"] for r in rows] == [legacy["id"]]
+    assert rows[0]["is_aa"] is False
+    assert rows[0]["legacy_aa"] is True
+    assert service.list_txns(conn, aa="unsettled")["total"] == 0
+
+
 def test_mirror_path_for_inmemory_raises():
     import sqlite3
     from cashlog import jsonsync

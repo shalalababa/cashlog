@@ -12,6 +12,7 @@ export interface Txn {
   category_color: string | null;
   note: string | null;
   is_aa: boolean;
+  legacy_aa: boolean;
   payer_id: number | null;
   aa_settled: boolean;
   base_cny: string | null;
@@ -271,6 +272,8 @@ export interface BudgetInput {
   category_id: number | null;
   amount_type?: "absolute" | "percent";
   amount?: string | null;
+  amount_currency?: "CNY" | "USD";
+  period_end?: string | null;
   percent?: string | null;
   note?: string | null;
 }
@@ -282,8 +285,29 @@ export interface MonthSummary {
   range_end: string;
   total_micro: number;
   total_cny: number;
+  total_usd: number | null;
+  usd_rate: number | null;
+  usd_rate_date: string | null;
+  rate_lookup_date: string;
+  rate_stale: boolean;
   delta?: number;
   delta_pct?: number | null;
+}
+
+export interface DashboardCumulative {
+  days: number[];
+  current: {
+    label: string;
+    range_start: string;
+    range_end: string;
+    values: number[];
+  };
+  previous: {
+    label: string;
+    range_start: string;
+    range_end: string;
+    values: number[];
+  };
 }
 
 export interface AAUnsettledSummary {
@@ -296,6 +320,72 @@ export interface Dashboard {
   current: MonthSummary;
   previous: MonthSummary;
   top_categories: CategoryStat[];
+  cumulative: DashboardCumulative;
   budget: BudgetStatus;
   aa_unsettled: AAUnsettledSummary;
+}
+
+// --- rates + xlsx sync ------------------------------------------------------
+export interface RateStatusCurrency {
+  code: string;
+  name: string;
+  active: boolean;
+  last_rate_date: string | null;
+  txn_count: number;
+  stale_txn_count: number;
+  missing_txn_count: number;
+}
+
+export interface RateStatus {
+  stale_days: number;
+  stale_txn_count: number;
+  missing_txn_count: number;
+  currencies: RateStatusCurrency[];
+}
+
+export interface RateRefreshResult {
+  provider: string;
+  quote: string;
+  end: string;
+  fetched: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  recomputed_txns: number;
+  currencies: {
+    code: string;
+    start: string | null;
+    end: string;
+    fetched: number;
+    inserted: number;
+    updated: number;
+    unchanged: number;
+  }[];
+  status: RateStatus;
+}
+
+export interface XlsxSyncSummary {
+  new: number;
+  modified: number;
+  deleted: number;
+  conflict: number;
+  unknown_uid: number;
+  anomalies: number;
+  db_only: number;
+  unchanged: number;
+}
+
+export interface XlsxDiffResult {
+  summary: XlsxSyncSummary;
+}
+
+export interface XlsxImportResult {
+  summary: XlsxSyncSummary;
+  applied: { new: number; modified: number; deleted: number; conflict: number };
+}
+
+export interface XlsxExportResult {
+  target: string;
+  written: { expense: number; income: number };
+  synced_at: string;
 }

@@ -13,6 +13,8 @@ import type {
   Participant,
   Person,
   RateInfo,
+  RateRefreshResult,
+  RateStatus,
   Session,
   SessionSummary,
   SettlementGroup,
@@ -22,6 +24,9 @@ import type {
   TxnInput,
   TxnPage,
   UnsettledGroup,
+  XlsxDiffResult,
+  XlsxExportResult,
+  XlsxImportResult,
 } from "./types";
 
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
@@ -128,4 +133,15 @@ export const api = {
     req<Budget>("/api/budgets", { method: "PUT", body: JSON.stringify(body) }),
   deleteBudget: (id: number) => req<void>(`/api/budgets/${id}`, { method: "DELETE" }),
   dashboard: () => req<Dashboard>("/api/dashboard"),
+
+  // --- exchange rates ---
+  rateStatus: () => req<RateStatus>("/api/rates/status"),
+  refreshRates: (body: { currencies?: string[]; start_date?: string; end_date?: string } = {}) =>
+    req<RateRefreshResult>("/api/rates/refresh", { method: "POST", body: JSON.stringify(body) }),
+
+  // --- xlsx sync ---
+  xlsxDiff: () => req<XlsxDiffResult>("/api/xlsx/diff"),
+  xlsxExport: () => req<XlsxExportResult>("/api/xlsx/export", { method: "POST" }),
+  xlsxImport: (body: { apply_deletions?: boolean; apply_conflicts?: boolean } = {}) =>
+    req<XlsxImportResult>("/api/xlsx/import", { method: "POST", body: JSON.stringify(body) }),
 };

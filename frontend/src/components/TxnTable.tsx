@@ -56,6 +56,7 @@ export default function TxnTable(props: Props) {
             <span>
               {t.content || <span className="muted">—</span>}
               {t.is_aa && <span className="badge aa" style={{ marginLeft: 6 }}>AA{t.aa_settled ? "✓" : ""}</span>}
+              {t.legacy_aa && <span className="badge aa" style={{ marginLeft: 6 }}>AA候选</span>}
             </span>
           );
         },

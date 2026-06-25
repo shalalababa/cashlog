@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
-from . import jsonsync, money, stats
+from . import jsonsync, money, rates, stats
 
 _ABSOLUTE = "absolute"
 _PERCENT = "percent"
@@ -57,6 +57,25 @@ def _overall_micro(conn: sqlite3.Connection) -> Optional[int]:
     return row["amount_micro"] if row else None
 
 
+def _amount_to_micro(conn: sqlite3.Connection, amount, currency: str,
+                     period_end: Optional[str]) -> int:
+    code = (currency or "CNY").upper()
+    if code == "CNY":
+        return money.cny_to_base_micro(amount)
+
+    cur = conn.execute(
+        "SELECT id, minor_unit FROM currency WHERE code = ?", (code,)).fetchone()
+    if cur is None:
+        raise ValueError(f"unknown budget currency: {code}")
+    end = period_end or stats.current_fiscal_end(date.today()).isoformat()
+    end = stats._parse(end).isoformat()
+    rl = rates.lookup(conn, cur["id"], end)
+    if rl is None:
+        raise ValueError(f"no {code}/CNY rate found for budget date {end}")
+    amount_minor = money.to_minor(amount, cur["minor_unit"])
+    return money.to_base_micro(amount_minor, cur["minor_unit"], rl.rate_to_base)
+
+
 # ---------------------------------------------------------------------------
 # Read
 # ---------------------------------------------------------------------------
@@ -84,7 +103,8 @@ def list_budgets(conn: sqlite3.Connection) -> dict:
 # ---------------------------------------------------------------------------
 def set_budget(conn: sqlite3.Connection, *, category_id: Optional[int],
                amount_type: str = _ABSOLUTE, amount=None, percent=None,
-               note: Optional[str] = None, write_json: bool = True) -> dict:
+               note: Optional[str] = None, amount_currency: str = "CNY",
+               period_end: Optional[str] = None, write_json: bool = True) -> dict:
     if amount_type not in (_ABSOLUTE, _PERCENT):
         raise ValueError(f"invalid amount_type: {amount_type!r}")
     if category_id is None and amount_type != _ABSOLUTE:
@@ -99,7 +119,7 @@ def set_budget(conn: sqlite3.Connection, *, category_id: Optional[int],
     if amount_type == _ABSOLUTE:
         if amount in (None, ""):
             raise ValueError("absolute budget requires an amount")
-        amount_micro = money.cny_to_base_micro(amount)
+        amount_micro = _amount_to_micro(conn, amount, amount_currency, period_end)
         if amount_micro < 0:
             raise ValueError("budget amount must be >= 0")
     else:

@@ -30,6 +30,10 @@ def _validate_direction(value: Any) -> str:
     return value
 
 
+def _looks_like_aa(content: str) -> bool:
+    return "AA" in (content or "").upper()
+
+
 # ---------------------------------------------------------------------------
 # Serialization (DB row -> API dict, minor -> major)
 # ---------------------------------------------------------------------------
@@ -51,6 +55,7 @@ def serialize_txn(row: sqlite3.Row) -> dict:
         "category_color": row["cat_color"],
         "note": row["note"],
         "is_aa": bool(row["is_aa"]),
+        "legacy_aa": (not bool(row["is_aa"])) and _looks_like_aa(row["content"]),
         "payer_id": row["payer_id"],
         "aa_settled": bool(row["aa_settled"]),
         "base_cny": str(base_cny) if base_cny is not None else None,
@@ -106,7 +111,7 @@ def list_txns(conn: sqlite3.Connection, *, direction: Optional[str] = None,
     if date_to:
         where.append("t.txn_date <= ?"); params.append(date_to)
     if aa == "aa":
-        where.append("t.is_aa = 1")
+        where.append("(t.is_aa = 1 OR UPPER(t.content) LIKE '%AA%')")
     elif aa == "unsettled":
         where.append("t.is_aa = 1 AND t.aa_settled = 0")
 

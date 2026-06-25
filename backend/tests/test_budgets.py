@@ -60,6 +60,17 @@ def test_set_budget_is_upsert_not_duplicate():
     assert conn.execute("SELECT COUNT(*) AS n FROM budget WHERE category_id IS NULL").fetchone()["n"] == 1
 
 
+def test_set_budget_accepts_usd_input_at_period_rate():
+    conn = _env()
+    usd = conn.execute("SELECT id FROM currency WHERE code='USD'").fetchone()["id"]
+    conn.execute("INSERT INTO exchange_rate (currency_id, rate_date, rate_to_base) VALUES (?,?,?)",
+                 (usd, "2024-03-05", "7.20"))
+    conn.commit()
+    budgets.set_budget(conn, category_id=None, amount="100", amount_currency="USD",
+                       period_end="2024-03-05", write_json=False)
+    assert budgets.list_budgets(conn)["overall"]["amount"] == "720.00"
+
+
 def test_overall_must_be_absolute():
     conn = _env()
     with pytest.raises(ValueError):

@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from . import aa_service, budgets, config, dashboard, db, seed, service, stats
+from . import aa_service, budgets, config, dashboard, db, rates, seed, service, stats, xlsxsync
 
 app = FastAPI(title="Cashlog API", version="0.1.0")
 app.add_middleware(
@@ -452,6 +452,8 @@ class BudgetIn(BaseModel):
     category_id: Optional[int] = None       # null = overall budget
     amount_type: str = "absolute"           # 'absolute' | 'percent'
     amount: Optional[str] = None            # major CNY, for absolute
+    amount_currency: Optional[str] = "CNY"   # CNY or USD input; stored as CNY
+    period_end: Optional[str] = None         # rate date for non-CNY amount input
     percent: Optional[str] = None           # share of overall, for percent
     note: Optional[str] = None
 
@@ -474,6 +476,8 @@ def put_budget(body: BudgetIn, conn=Depends(get_conn)):
     try:
         return budgets.set_budget(conn, category_id=body.category_id,
                                   amount_type=body.amount_type, amount=body.amount,
+                                  amount_currency=body.amount_currency or "CNY",
+                                  period_end=body.period_end,
                                   percent=body.percent, note=body.note)
     except (ValueError, sqlite3.IntegrityError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -489,6 +493,68 @@ def delete_budget(budget_id: int, conn=Depends(get_conn)):
 @app.get("/api/dashboard")
 def get_dashboard(conn=Depends(get_conn)):
     return dashboard.dashboard(conn)
+
+
+# --- exchange rates ----------------------------------------------------------
+class RateRefreshIn(BaseModel):
+    currencies: Optional[list[str]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+@app.get("/api/rates/status")
+def rates_status(conn=Depends(get_conn)):
+    return rates.rate_status(conn)
+
+
+@app.post("/api/rates/refresh")
+def refresh_rates(body: RateRefreshIn, conn=Depends(get_conn)):
+    try:
+        return rates.refresh_rates(conn, currency_codes=body.currencies,
+                                   start_date=body.start_date, end_date=body.end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# --- xlsx sync ---------------------------------------------------------------
+class XlsxImportIn(BaseModel):
+    apply_deletions: bool = False
+    apply_conflicts: bool = False
+
+
+@app.get("/api/xlsx/diff")
+def xlsx_diff(conn=Depends(get_conn)):
+    try:
+        diff = xlsxsync.diff_from_xlsx(conn)
+        return {"summary": diff.summary()}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/xlsx/export")
+def xlsx_export(conn=Depends(get_conn)):
+    try:
+        return xlsxsync.export_to_xlsx(conn)
+    except xlsxsync.WorkbookLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/xlsx/import")
+def xlsx_import(body: XlsxImportIn, conn=Depends(get_conn)):
+    try:
+        diff = xlsxsync.diff_from_xlsx(conn)
+        applied = xlsxsync.apply_diff(conn, None, diff,
+                                      apply_deletions=body.apply_deletions,
+                                      apply_conflicts=body.apply_conflicts)
+        return {"summary": diff.summary(), "applied": applied}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # --- serve the built frontend (same origin) ---------------------------------

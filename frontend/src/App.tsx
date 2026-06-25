@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { api } from "./api";
-import type { Filters, Meta, Txn, TxnPage } from "./types";
+import type { Filters, Meta, RateStatus, Txn, TxnPage } from "./types";
 import FiltersBar from "./components/Filters";
 import TxnTable from "./components/TxnTable";
 import TxnForm from "./components/TxnForm";
@@ -26,6 +26,7 @@ const LIMIT = 50;
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
+  const [rateStatus, setRateStatus] = useState<RateStatus | null>(null);
   const [view, setView] = useState<"dashboard" | "list" | "aa" | "stats" | "budget" | "manage">("dashboard");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sort, setSort] = useState("date");
@@ -43,9 +44,14 @@ export default function App() {
     window.setTimeout(() => setToast(null), 2200);
   };
 
+  const reloadRateStatus = useCallback(() => {
+    api.rateStatus().then(setRateStatus).catch(() => setRateStatus(null));
+  }, []);
+
   useEffect(() => {
     api.meta().then(setMeta).catch((e) => notify(e.message, true));
-  }, []);
+    reloadRateStatus();
+  }, [reloadRateStatus]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -118,6 +124,7 @@ export default function App() {
     notify(editing ? "已更新" : "已新增");
     reload();
     api.meta().then(setMeta);
+    reloadRateStatus();
   }
 
   if (!meta) return <div className="app"><div className="empty">加载中…</div></div>;
@@ -156,6 +163,14 @@ export default function App() {
         <Dashboard notify={notify} onNavigate={setView} />
       ) : view === "list" ? (
         <>
+          {rateStatus && (rateStatus.stale_txn_count > 0 || rateStatus.missing_txn_count > 0) && (
+            <div className="notice-banner">
+              <span>
+                有 {rateStatus.stale_txn_count} 笔旧汇率、{rateStatus.missing_txn_count} 笔缺汇率交易。刷新后会重算人民币换算与统计。
+              </span>
+              <button className="btn sm" onClick={() => setView("manage")}>去刷新汇率</button>
+            </div>
+          )}
           <FiltersBar
             filters={filters}
             categories={meta.categories}
@@ -190,7 +205,12 @@ export default function App() {
         <ManageView
           categories={meta.categories}
           currencies={meta.currencies}
+          notify={notify}
           onChanged={() => api.meta().then(setMeta)}
+          onRatesChanged={() => {
+            reloadRateStatus();
+            reload();
+          }}
         />
       )}
 

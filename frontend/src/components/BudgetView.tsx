@@ -9,7 +9,8 @@ interface Props {
 }
 
 type Kind = "absolute" | "percent";
-interface Edit { type: Kind; value: string }
+type BudgetCurrency = "CNY" | "USD";
+interface Edit { type: Kind; value: string; currency: BudgetCurrency }
 
 const money2 = (n: number) =>
   n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -29,6 +30,7 @@ function Bar({ pct, over }: { pct: number | null; over: boolean }) {
 export default function BudgetView({ categories, notify, onChanged }: Props) {
   const [status, setStatus] = useState<BudgetStatus | null>(null);
   const [overall, setOverall] = useState("");
+  const [overallCurrency, setOverallCurrency] = useState<BudgetCurrency>("CNY");
   const [edits, setEdits] = useState<Record<string, Edit>>({});
 
   const expenseCats = useMemo(
@@ -47,8 +49,10 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
           m[String(c.category_id)] = {
             type: c.amount_type,
             value: c.amount_type === "percent" ? c.percent ?? "" : c.limit ?? "",
+            currency: "CNY",
           };
         }
+        setOverallCurrency("CNY");
         setEdits(m);
       })
       .catch((e) => notify(e.message, true));
@@ -75,7 +79,7 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
 
   const setEdit = (cid: number, patch: Partial<Edit>) =>
     setEdits((e) => {
-      const prev: Edit = e[cid] ?? { type: "absolute", value: "" };
+      const prev: Edit = e[cid] ?? { type: "absolute", value: "", currency: "CNY" };
       return { ...e, [cid]: { ...prev, ...patch } };
     });
 
@@ -85,7 +89,13 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
         if (status?.overall.budget_id != null) await api.deleteBudget(status.overall.budget_id);
         else { return; }
       } else {
-        await api.setBudget({ category_id: null, amount_type: "absolute", amount: overall.trim() });
+        await api.setBudget({
+          category_id: null,
+          amount_type: "absolute",
+          amount: overall.trim(),
+          amount_currency: overallCurrency,
+          period_end: status?.period_end ?? null,
+        });
       }
       notify("总预算已更新");
       load();
@@ -96,13 +106,15 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
   }
 
   async function saveCategory(cid: number) {
-    const e = edits[String(cid)] ?? { type: "absolute", value: "" };
+    const e = edits[String(cid)] ?? { type: "absolute", value: "", currency: "CNY" };
     if (!e.value.trim()) return;
     try {
       await api.setBudget({
         category_id: cid,
         amount_type: e.type,
         amount: e.type === "absolute" ? e.value.trim() : null,
+        amount_currency: e.type === "absolute" ? e.currency : "CNY",
+        period_end: status?.period_end ?? null,
         percent: e.type === "percent" ? e.value.trim() : null,
       });
       notify("分类预算已更新");
@@ -116,7 +128,7 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
   async function clearCategory(cid: number) {
     const st = statusByCat[String(cid)];
     if (!st) {
-      setEdits((e) => ({ ...e, [cid]: { type: "absolute", value: "" } }));
+      setEdits((e) => ({ ...e, [cid]: { type: "absolute", value: "", currency: "CNY" } }));
       return;
     }
     try {
@@ -140,16 +152,23 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
         </div>
         <div className="budget-overall">
           <div className="budget-edit">
-            <span className="muted">每月总预算 ¥</span>
+            <span className="muted">每月总预算</span>
+            <div className="seg sm">
+              <button className={overallCurrency === "CNY" ? "active" : ""} onClick={() => { setOverallCurrency("CNY"); setOverall(""); }}>¥</button>
+              <button className={overallCurrency === "USD" ? "active" : ""} onClick={() => { setOverallCurrency("USD"); setOverall(""); }}>$</button>
+            </div>
             <input
               type="number"
               inputMode="decimal"
-              placeholder="不限"
+              placeholder={overallCurrency === "USD" ? "美元金额" : "人民币金额"}
               value={overall}
               onChange={(e) => setOverall(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && saveOverall()}
             />
             <button className="btn primary sm" onClick={saveOverall}>保存</button>
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            美元预算会按当前财政月结尾日（{status.period_end}）的美元汇率折算为人民币保存。
           </div>
           {status.has_overall ? (
             <div className="budget-progress">
@@ -172,7 +191,7 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
         <div className="section-title">分类预算（绝对值 ¥ 或 占总预算 %）</div>
         <div className="budget-rows">
           {expenseCats.map((c) => {
-            const e = edits[String(c.id)] ?? { type: "absolute" as Kind, value: "" };
+            const e = edits[String(c.id)] ?? { type: "absolute" as Kind, value: "", currency: "CNY" as BudgetCurrency };
             const st = statusByCat[String(c.id)];
             const budgeted = !!st;
             return (
@@ -180,14 +199,15 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
                 <span className="swatch" style={{ background: c.color ?? "#ccc" }} />
                 <span className="budget-name">{c.name}</span>
                 <div className="seg sm">
-                  <button className={e.type === "absolute" ? "active" : ""} onClick={() => setEdit(c.id, { type: "absolute" })}>¥</button>
-                  <button className={e.type === "percent" ? "active" : ""} onClick={() => setEdit(c.id, { type: "percent" })}>%</button>
+                  <button className={e.type === "absolute" && e.currency === "CNY" ? "active" : ""} onClick={() => setEdit(c.id, { type: "absolute", currency: "CNY", value: "" })}>¥</button>
+                  <button className={e.type === "absolute" && e.currency === "USD" ? "active" : ""} onClick={() => setEdit(c.id, { type: "absolute", currency: "USD", value: "" })}>$</button>
+                  <button className={e.type === "percent" ? "active" : ""} onClick={() => setEdit(c.id, { type: "percent", value: "" })}>%</button>
                 </div>
                 <input
                   className="budget-input"
                   type="number"
                   inputMode="decimal"
-                  placeholder={e.type === "percent" ? "%" : "¥"}
+                  placeholder={e.type === "percent" ? "%" : e.currency === "USD" ? "$" : "¥"}
                   value={e.value}
                   onChange={(ev) => setEdit(c.id, { value: ev.target.value })}
                   onKeyDown={(ev) => ev.key === "Enter" && saveCategory(c.id)}
