@@ -26,3 +26,6 @@ _*.txt
 # Skills
 .claude/
 .codex/
+
+记账单.xlsx
+~记账单.xlsx
