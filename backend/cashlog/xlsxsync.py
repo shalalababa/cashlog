@@ -28,12 +28,14 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import openpyxl
+from openpyxl.styles import Alignment
 
 from . import config, importer, jsonsync, money, rates
 
@@ -44,7 +46,9 @@ DATA_SHEETS = {
 }
 UID_COL = 8  # column H
 UID_HEADER = "_cashlog_uid"
-DATE_FMT = "yyyy-mm-dd"
+# Excel built-in short date. Excel renders it with the user's regional settings
+# (for this workbook that appears as e.g. 2026/6/24), unlike a literal ISO mask.
+DATE_FMT = "mm-dd-yy"
 RATE_SHEET = "汇率"
 STATS_SHEET = "统计"
 
@@ -97,28 +101,79 @@ def _safe_unlink(path: Path) -> None:
         pass
 
 
-def _clear_trailing(ws, first_row: int, last_row: int, ncols: int) -> None:
+def _clear_trailing(ws, first_row: int, last_row: int, ncols: int,
+                    templates: list | None = None, *,
+                    date_cols: set[int] | None = None) -> None:
+    date_cols = date_cols or set()
     for rr in range(first_row, last_row + 1):
         for col in range(1, ncols + 1):
-            ws.cell(row=rr, column=col).value = None
+            _write_cell(ws, rr, col, None, templates, date_cell=(col in date_cols))
+
+
+def _centered(alignment) -> Alignment:
+    """Preserve existing alignment details, filling missing axes with center."""
+    return Alignment(
+        horizontal=alignment.horizontal or "center",
+        vertical=alignment.vertical or "center",
+        text_rotation=alignment.textRotation,
+        wrap_text=alignment.wrap_text,
+        shrink_to_fit=alignment.shrink_to_fit,
+        indent=alignment.indent,
+        relativeIndent=alignment.relativeIndent,
+        justifyLastLine=alignment.justifyLastLine,
+        readingOrder=alignment.readingOrder,
+    )
+
+
+def _column_style_templates(ws, ncols: int, *,
+                            preferred_rows: tuple[int, ...] = (2, 1)) -> list:
+    """Snapshot per-column styles before rewriting rows.
+
+    ``openpyxl`` creates blank cells with default left-ish display. When export
+    adds rows beyond the existing workbook range, copying a nearby column style
+    keeps the workbook looking like it did before the app touched it.
+    """
+    templates = []
+    for col in range(1, ncols + 1):
+        picked = None
+        for row in preferred_rows:
+            cell = ws.cell(row=row, column=col)
+            if cell.has_style:
+                picked = copy(cell._style)
+                break
+        templates.append(picked)
+    return templates
+
+
+def _write_cell(ws, row: int, col: int, value: Any, templates: list | None = None, *,
+                date_cell: bool = False):
+    cell = ws.cell(row=row, column=col)
+    cell.value = value
+    if templates and col <= len(templates) and templates[col - 1] is not None:
+        cell._style = copy(templates[col - 1])
+    cell.alignment = _centered(cell.alignment)
+    if date_cell:
+        cell.number_format = DATE_FMT
+    return cell
 
 
 def _rebuild_rates_sheet(conn: sqlite3.Connection, wb) -> None:
     """汇率: 日期 / 币种 / 当日汇率, rebuilt from exchange_rate (values)."""
     ws = wb[RATE_SHEET] if RATE_SHEET in wb.sheetnames else wb.create_sheet(RATE_SHEET)
     original_max = ws.max_row
+    templates = _column_style_templates(ws, 3)
     for col, h in enumerate(["日期", "币种", "当日汇率"], start=1):
-        ws.cell(row=1, column=col, value=h)
+        _write_cell(ws, 1, col, h, templates, date_cell=(col == 1))
     r = 2
     for row in conn.execute(
         """SELECT er.rate_date, cur.name AS ccy, er.rate_to_base
            FROM exchange_rate er JOIN currency cur ON cur.id = er.currency_id
            ORDER BY er.rate_date, cur.code"""):
-        ws.cell(row=r, column=1, value=date.fromisoformat(row["rate_date"])).number_format = DATE_FMT
-        ws.cell(row=r, column=2, value=row["ccy"])
-        ws.cell(row=r, column=3, value=float(row["rate_to_base"]))
+        _write_cell(ws, r, 1, date.fromisoformat(row["rate_date"]), templates, date_cell=True)
+        _write_cell(ws, r, 2, row["ccy"], templates)
+        _write_cell(ws, r, 3, float(row["rate_to_base"]), templates)
         r += 1
-    _clear_trailing(ws, r, original_max, 3)
+    _clear_trailing(ws, r, original_max, 3, templates, date_cols={1})
 
 
 def _rebuild_stats_sheet(conn: sqlite3.Connection, wb, base_id: int,
@@ -135,8 +190,9 @@ def _rebuild_stats_sheet(conn: sqlite3.Connection, wb, base_id: int,
     original_max = ws.max_row
     headers = ["财政月", "总支出金额", "币种", "美元换算", "信用卡金额",
                "币种", "人民币换算", "当日汇率", "占总支出"]
+    templates = _column_style_templates(ws, 9)
     for col, h in enumerate(headers, start=1):
-        ws.cell(row=1, column=col, value=h)
+        _write_cell(ws, 1, col, h, templates, date_cell=(col == 1))
 
     r = 2
     for fm in conn.execute("SELECT * FROM fiscal_month ORDER BY period_end"):
@@ -144,19 +200,19 @@ def _rebuild_stats_sheet(conn: sqlite3.Connection, wb, base_id: int,
         rl = rates.lookup(conn, usd_id, pe, base_currency_id=base_id) if usd_id else None
         usd_rate = float(rl.rate_to_base) if rl else None
         cc_major = float(money.from_minor(fm["credit_card_amount_minor"], 2))
-        ws.cell(row=r, column=1, value=date.fromisoformat(pe)).number_format = DATE_FMT
-        ws.cell(row=r, column=2,
-                value=f'=SUMIFS(支出!$F:$F, 支出!$A:$A,">="&EDATE($A{r},-1), '
-                      f'支出!$A:$A,"<"&$A{r}{excl_terms})')
-        ws.cell(row=r, column=3, value="人民币")
-        ws.cell(row=r, column=4, value=f"=B{r}/H{r}")
-        ws.cell(row=r, column=5, value=cc_major)
-        ws.cell(row=r, column=6, value="美元")
-        ws.cell(row=r, column=7, value=f"=E{r}*H{r}")
-        ws.cell(row=r, column=8, value=usd_rate)
-        ws.cell(row=r, column=9, value=f"=G{r}/B{r}")
+        _write_cell(ws, r, 1, date.fromisoformat(pe), templates, date_cell=True)
+        _write_cell(ws, r, 2,
+                    f'=SUMIFS(支出!$F:$F, 支出!$A:$A,">="&EDATE($A{r},-1), '
+                    f'支出!$A:$A,"<"&$A{r}{excl_terms})', templates)
+        _write_cell(ws, r, 3, "人民币", templates)
+        _write_cell(ws, r, 4, f"=B{r}/H{r}", templates)
+        _write_cell(ws, r, 5, cc_major, templates)
+        _write_cell(ws, r, 6, "美元", templates)
+        _write_cell(ws, r, 7, f"=E{r}*H{r}", templates)
+        _write_cell(ws, r, 8, usd_rate, templates)
+        _write_cell(ws, r, 9, f"=G{r}/B{r}", templates)
         r += 1
-    _clear_trailing(ws, r, original_max, 9)
+    _clear_trailing(ws, r, original_max, 9, templates, date_cols={1})
 
 
 # ---------------------------------------------------------------------------
@@ -180,21 +236,22 @@ def export_to_xlsx(conn: sqlite3.Connection, target: Optional[Path] = None, *,
     for direction, (sheet_name, content_header) in DATA_SHEETS.items():
         ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.create_sheet(sheet_name)
         original_max = ws.max_row
+        templates = _column_style_templates(ws, UID_COL)
 
         for col, value in enumerate(_header(content_header), start=1):
-            ws.cell(row=1, column=col, value=value)
+            _write_cell(ws, 1, col, value, templates, date_cell=(col == 1))
 
         r = 2
         for t in _fetch_txns(conn, direction):
             major = money.from_minor(t["amount_minor"], t["minor_unit"])
-            ws.cell(row=r, column=1, value=date.fromisoformat(t["txn_date"])).number_format = DATE_FMT
-            ws.cell(row=r, column=2, value=float(major))
-            ws.cell(row=r, column=3, value=t["ccy_name"])
-            ws.cell(row=r, column=4, value=t["content"])
-            ws.cell(row=r, column=5, value=t["cat_name"] or "")
-            ws.cell(row=r, column=6, value=f"=B{r}*G{r}")
-            ws.cell(row=r, column=7, value=float(t["rate_used"]) if t["rate_used"] is not None else None)
-            ws.cell(row=r, column=UID_COL, value=t["external_uid"])
+            _write_cell(ws, r, 1, date.fromisoformat(t["txn_date"]), templates, date_cell=True)
+            _write_cell(ws, r, 2, float(major), templates)
+            _write_cell(ws, r, 3, t["ccy_name"], templates)
+            _write_cell(ws, r, 4, t["content"], templates)
+            _write_cell(ws, r, 5, t["cat_name"] or "", templates)
+            _write_cell(ws, r, 6, f"=B{r}*G{r}", templates)
+            _write_cell(ws, r, 7, float(t["rate_used"]) if t["rate_used"] is not None else None, templates)
+            _write_cell(ws, r, UID_COL, t["external_uid"], templates)
             pending.append((t["id"], _db_hash(direction, t["txn_date"], t["amount_minor"],
                                               t["code"], t["content"], t["cat_name"], t["note"])))
             r += 1
@@ -202,7 +259,7 @@ def export_to_xlsx(conn: sqlite3.Connection, target: Optional[Path] = None, *,
 
         # NB: ws.cell(..., value=None) is a no-op in openpyxl; _clear_trailing
         # assigns .value on the cell object to actually clear it.
-        _clear_trailing(ws, r, original_max, UID_COL)
+        _clear_trailing(ws, r, original_max, UID_COL, templates, date_cols={1})
 
         ws.column_dimensions[openpyxl.utils.get_column_letter(UID_COL)].hidden = True
 

@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import openpyxl  # noqa: E402
+from openpyxl.styles import Alignment  # noqa: E402
 
 from cashlog import db, seed, xlsxsync  # noqa: E402
 
@@ -44,6 +45,27 @@ def _export(conn, xlsx):
     return xlsxsync.export_to_xlsx(conn, target=xlsx, backup=False, write_json=False)
 
 
+def _styled_template(path: Path):
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    center = Alignment(horizontal="center", vertical="center")
+    for sheet, content_header in xlsxsync.DATA_SHEETS.values():
+        ws = wb.create_sheet(sheet)
+        for col, header in enumerate(["日期", "金额", "币种", content_header, "分类",
+                                      "人民币换算", "当日汇率", xlsxsync.UID_HEADER], start=1):
+            for row in (1, 2):
+                cell = ws.cell(row=row, column=col)
+                cell.alignment = center
+            ws.cell(row=1, column=col, value=header)
+        for row in (1, 2):
+            ws.cell(row=row, column=1).number_format = "mm-dd-yy"
+            ws.cell(row=row, column=2).number_format = "0.00"
+            ws.cell(row=row, column=6).number_format = "0.00"
+            ws.cell(row=row, column=7).number_format = "0.0000"
+    wb.save(str(path))
+    wb.close()
+
+
 def test_round_trip_is_clean():
     _, conn, xlsx = _build_env()
     _export(conn, xlsx)
@@ -56,6 +78,25 @@ def test_round_trip_is_clean():
     ws = wb["支出"]
     assert ws.cell(row=1, column=8).value == xlsxsync.UID_HEADER
     assert ws.column_dimensions["H"].hidden is True
+
+
+def test_export_preserves_short_dates_and_center_alignment_for_new_rows():
+    _, conn, xlsx = _build_env()
+    _styled_template(xlsx)
+    _export(conn, xlsx)
+
+    wb = openpyxl.load_workbook(str(xlsx), data_only=False)
+    for sheet in ("支出", "入账"):
+        ws = wb[sheet]
+        for row in range(1, ws.max_row + 1):
+            assert ws.cell(row=row, column=1).number_format == "mm-dd-yy"
+            for col in range(1, xlsxsync.UID_COL + 1):
+                cell = ws.cell(row=row, column=col)
+                assert cell.alignment.horizontal == "center"
+                assert cell.alignment.vertical == "center"
+        assert ws.cell(row=ws.max_row, column=6).number_format == "0.00"
+        assert ws.cell(row=ws.max_row, column=7).number_format == "0.0000"
+    wb.close()
 
 
 def test_row_reorder_is_not_a_change():
@@ -133,6 +174,13 @@ def test_export_clears_stale_template_rows():
     s = xlsxsync.diff_from_xlsx(conn, xlsx).summary()
     assert s["new"] == 0 and s["anomalies"] == 0
     assert s["unchanged"] == 4
+    wb = openpyxl.load_workbook(str(xlsx))
+    ws = wb["支出"]
+    assert ws.cell(row=8, column=1).value is None
+    assert ws.cell(row=8, column=1).number_format == "mm-dd-yy"
+    assert ws.cell(row=8, column=4).alignment.horizontal == "center"
+    assert ws.cell(row=8, column=4).alignment.vertical == "center"
+    wb.close()
 
 
 def test_unsynced_db_only_row_is_not_a_deletion():
@@ -221,10 +269,18 @@ def test_rebuild_rates_and_stats_sheets():
 
     rates_ws = wb["汇率"]
     assert [rates_ws.cell(row=1, column=c).value for c in range(1, 4)] == ["日期", "币种", "当日汇率"]
+    for col in range(1, 4):
+        assert rates_ws.cell(row=2, column=col).alignment.horizontal == "center"
+        assert rates_ws.cell(row=2, column=col).alignment.vertical == "center"
+    assert rates_ws.cell(row=2, column=1).number_format == "mm-dd-yy"
     assert rates_ws.cell(row=2, column=3).value == 7.10
     assert rates_ws.cell(row=3, column=3).value == 7.20
 
     st = wb["统计"]
+    for col in range(1, 10):
+        assert st.cell(row=2, column=col).alignment.horizontal == "center"
+        assert st.cell(row=2, column=col).alignment.vertical == "center"
+    assert st.cell(row=2, column=1).number_format == "mm-dd-yy"
     assert st.cell(row=2, column=8).value == 7.20         # 当日汇率 on the 5th
     assert st.cell(row=2, column=5).value == 100.0        # 信用卡金额 (USD)
     assert str(st.cell(row=2, column=2).value).startswith("=SUMIFS(")
