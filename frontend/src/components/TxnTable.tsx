@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type ColumnDef,
-  type VisibilityState,
   flexRender,
   getCoreRowModel,
   useReactTable,
@@ -27,8 +26,7 @@ const SORTABLE = new Set(["date", "amount", "base_cny", "content", "category"]);
 
 export default function TxnTable(props: Props) {
   const { rows, total, offset, limit, sort, order, onSort, onPage, onEdit, onDelete } = props;
-  const [visibility, setVisibility] = useState<VisibilityState>({});
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [pageInput, setPageInput] = useState("1");
 
   const columns = useMemo<ColumnDef<Txn>[]>(
     () => [
@@ -118,8 +116,6 @@ export default function TxnTable(props: Props) {
   const table = useReactTable({
     data: rows,
     columns,
-    state: { columnVisibility: visibility },
-    onColumnVisibilityChange: setVisibility,
     getCoreRowModel: getCoreRowModel(),
     manualSorting: true,
     manualPagination: true,
@@ -127,29 +123,30 @@ export default function TxnTable(props: Props) {
 
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + limit, total);
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const currentPage = Math.min(totalPages, Math.floor(offset / limit) + 1);
+
+  useEffect(() => {
+    setPageInput(String(currentPage));
+  }, [currentPage]);
+
+  function goToPage(value = pageInput) {
+    if (value.trim() === "") {
+      setPageInput(String(currentPage));
+      return;
+    }
+    const requested = Number(value);
+    if (!Number.isFinite(requested)) {
+      setPageInput(String(currentPage));
+      return;
+    }
+    const page = Math.min(totalPages, Math.max(1, Math.trunc(requested)));
+    setPageInput(String(page));
+    onPage((page - 1) * limit);
+  }
 
   return (
     <div className="card">
-      <div style={{ display: "flex", justifyContent: "flex-end", padding: "8px 12px 0" }}>
-        <div className="colmenu">
-          <button className="btn sm ghost" onClick={() => setMenuOpen((o) => !o)}>列 ▾</button>
-          {menuOpen && (
-            <div className="colmenu-pop" onMouseLeave={() => setMenuOpen(false)}>
-              {table.getAllLeafColumns().filter((c) => c.id !== "actions").map((col) => (
-                <label key={col.id}>
-                  <input
-                    type="checkbox"
-                    checked={col.getIsVisible()}
-                    onChange={col.getToggleVisibilityHandler()}
-                  />
-                  {colLabel(col.id)}
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
       <div className="table-wrap">
         <table className="txns">
           <thead>
@@ -193,22 +190,39 @@ export default function TxnTable(props: Props) {
       <div className="pager">
         <span>共 {total} 条 · 显示 {from}–{to}</span>
         <span className="spacer" style={{ flex: 1 }} />
+        <button className="btn sm" disabled={offset === 0} onClick={() => onPage(0)}>
+          首页
+        </button>
         <button className="btn sm" disabled={offset === 0} onClick={() => onPage(Math.max(0, offset - limit))}>
           上一页
         </button>
+        <span className="pager-page">
+          第
+          <input
+            aria-label="页码"
+            className="pager-input"
+            inputMode="numeric"
+            min={1}
+            max={totalPages}
+            type="number"
+            value={pageInput}
+            onChange={(e) => setPageInput(e.target.value)}
+            onBlur={() => goToPage()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                setPageInput(String(currentPage));
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          / {totalPages} 页
+        </span>
         <button className="btn sm" disabled={to >= total} onClick={() => onPage(offset + limit)}>
           下一页
         </button>
       </div>
     </div>
   );
-}
-
-function colLabel(id: string): string {
-  return (
-    { date: "日期", direction: "方向", content: "内容", category: "分类", amount: "金额", base_cny: "人民币" } as Record<
-      string,
-      string
-    >
-  )[id] ?? id;
 }

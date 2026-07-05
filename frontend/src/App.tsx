@@ -10,6 +10,7 @@ import AAView from "./components/AAView";
 import StatsView from "./components/StatsView";
 import BudgetView from "./components/BudgetView";
 import Dashboard from "./components/Dashboard";
+import ScrollTopButton from "./components/ScrollTopButton";
 
 const EMPTY_FILTERS: Filters = {
   direction: "",
@@ -226,6 +227,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      <ScrollTopButton />
       {toast && <div className={`toast ${toast.error ? "error" : ""}`}>{toast.msg}</div>}
     </div>
   );

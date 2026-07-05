@@ -62,21 +62,6 @@ export default function FiltersBar({ filters, categories, currencies, onChange, 
       <span className="muted">–</span>
       <input type="date" value={filters.date_to} onChange={(e) => onChange({ date_to: e.target.value })} />
 
-      <select value={filters.aa} onChange={(e) => onChange({ aa: e.target.value })}>
-        <option value="">AA：不限</option>
-        <option value="aa">仅 AA</option>
-        <option value="unsettled">未结清 AA</option>
-      </select>
-
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={filters.uncategorized}
-          onChange={(e) => onChange({ uncategorized: e.target.checked })}
-        />
-        仅未分类
-      </label>
-
       <button className="btn ghost sm" onClick={onReset}>重置</button>
     </div>
   );
