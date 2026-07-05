@@ -94,6 +94,57 @@ def test_fiscal_ratio_can_exceed_one():
     assert fm["ratio"] == pytest.approx(7.0)                 # 700 / 100 = 700%
 
 
+def test_fiscal_month_total_override_replaces_headline_total():
+    conn = _env()
+    _rate(conn, "USD", "2024-03-01", "7")
+    _expense(conn, "2024-02-10", "100")
+    _expense(conn, "2024-02-12", "30")
+
+    stats.save_fiscal_month(conn, "2024-03-05", credit_card="10",
+                            total_cny="200", write_json=False)
+
+    fm = stats.fiscal_months(conn)[0]
+    assert fm["computed_total_cny"] == 130.0
+    assert fm["total_cny"] == 200.0
+    assert fm["total_cny_override"] == 200.0
+    assert fm["total_cny_overridden"] is True
+    assert fm["total_usd"] == round(200 / 7, 2)
+    assert fm["credit_card_cny"] == 70.0
+    assert fm["ratio"] == pytest.approx(70 / 200)
+
+
+def test_save_fiscal_month_adds_period_and_can_clear_override():
+    conn = _env()
+    _rate(conn, "USD", "2024-04-05", "7.2")
+
+    stats.save_fiscal_month(conn, "2024-04-05", credit_card="12.34",
+                            total_cny="345.67", write_json=False)
+    fm = stats.fiscal_months(conn)[0]
+    assert fm["period_end"] == "2024-04-05"
+    assert fm["credit_card"] == 12.34
+    assert fm["total_cny"] == 345.67
+    assert fm["total_cny_overridden"] is True
+
+    stats.save_fiscal_month(conn, "2024-04-05", credit_card="15",
+                            total_cny="", write_json=False)
+    fm = stats.fiscal_months(conn)[0]
+    assert fm["credit_card"] == 15.0
+    assert fm["computed_total_cny"] == 0.0
+    assert fm["total_cny"] == 0.0
+    assert fm["total_cny_override"] is None
+    assert fm["total_cny_overridden"] is False
+
+
+def test_save_fiscal_month_validates_period_and_credit_card_amount():
+    conn = _env()
+    with pytest.raises(ValueError):
+        stats.save_fiscal_month(conn, "2024-03-04", credit_card="10",
+                                total_cny=None, write_json=False)
+    with pytest.raises(ValueError):
+        stats.save_fiscal_month(conn, "2024-03-05", credit_card="-1",
+                                total_cny=None, write_json=False)
+
+
 # --- category breakdown -----------------------------------------------------
 def test_category_breakdown_buckets_uncategorized_and_flags_excluded():
     conn = _env()

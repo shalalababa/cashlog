@@ -246,6 +246,13 @@ table.calc-items td:nth-child(2) input { width: 90px; }
 .cat-toggle .pick { transition: all .12s ease; }
 table.stats-table th, table.stats-table td { white-space: nowrap; }
 table.stats-table td.num, table.stats-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.fiscal-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.fiscal-credit-input {
+  width: 104px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 9px; font-size: 13px; text-align: right;
+  background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums;
+}
+.fiscal-credit-input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 @media (max-width: 860px) { .stats-grid2 { grid-template-columns: 1fr; } }
 
 .notice-banner {

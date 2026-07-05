@@ -15,7 +15,7 @@ from typing import Optional
 # Tables exported, in dependency order.
 TABLES = [
     "currency", "exchange_rate", "category", "person",
-    "txn", "txn_participant", "fiscal_month", "budget",
+    "txn", "txn_participant", "fiscal_month", "fiscal_month_total_override", "budget",
     "aa_session", "aa_session_item", "aa_session_item_share", "setting",
 ]
 

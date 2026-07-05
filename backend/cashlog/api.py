@@ -115,6 +115,12 @@ class CategoryPatch(BaseModel):
     active: Optional[bool] = None
 
 
+class FiscalMonthIn(BaseModel):
+    total_cny: Optional[str] = None          # blank/null clears manual override
+    credit_card: str = "0"                  # major units in credit_card_currency
+    credit_card_currency: str = "USD"
+
+
 # --- endpoints --------------------------------------------------------------
 @app.get("/api/health")
 def health():
@@ -426,6 +432,20 @@ def aa_generate_txn(session_id: int, body: GenerateIn, conn=Depends(get_conn)):
 @app.get("/api/stats/fiscal")
 def stats_fiscal(conn=Depends(get_conn)):
     return stats.fiscal_months(conn)
+
+
+@app.put("/api/stats/fiscal/{period_end}")
+def put_stats_fiscal(period_end: str, body: FiscalMonthIn, conn=Depends(get_conn)):
+    try:
+        return stats.save_fiscal_month(
+            conn,
+            period_end,
+            credit_card=body.credit_card,
+            total_cny=body.total_cny,
+            credit_card_currency=body.credit_card_currency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/stats/categories")

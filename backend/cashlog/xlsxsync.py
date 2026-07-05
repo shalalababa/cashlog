@@ -195,15 +195,24 @@ def _rebuild_stats_sheet(conn: sqlite3.Connection, wb, base_id: int,
         _write_cell(ws, 1, col, h, templates, date_cell=(col == 1))
 
     r = 2
-    for fm in conn.execute("SELECT * FROM fiscal_month ORDER BY period_end"):
+    for fm in conn.execute(
+        """SELECT fm.*, o.total_override_micro
+           FROM fiscal_month fm
+           LEFT JOIN fiscal_month_total_override o ON o.period_end = fm.period_end
+           ORDER BY fm.period_end"""
+    ):
         pe = fm["period_end"]
         rl = rates.lookup(conn, usd_id, pe, base_currency_id=base_id) if usd_id else None
         usd_rate = float(rl.rate_to_base) if rl else None
         cc_major = float(money.from_minor(fm["credit_card_amount_minor"], 2))
+        total_override = fm["total_override_micro"]
         _write_cell(ws, r, 1, date.fromisoformat(pe), templates, date_cell=True)
-        _write_cell(ws, r, 2,
-                    f'=SUMIFS(支出!$F:$F, 支出!$A:$A,">="&EDATE($A{r},-1), '
-                    f'支出!$A:$A,"<"&$A{r}{excl_terms})', templates)
+        if total_override is None:
+            _write_cell(ws, r, 2,
+                        f'=SUMIFS(支出!$F:$F, 支出!$A:$A,">="&EDATE($A{r},-1), '
+                        f'支出!$A:$A,"<"&$A{r}{excl_terms})', templates)
+        else:
+            _write_cell(ws, r, 2, float(money.base_micro_to_cny(total_override)), templates)
         _write_cell(ws, r, 3, "人民币", templates)
         _write_cell(ws, r, 4, f"=B{r}/H{r}", templates)
         _write_cell(ws, r, 5, cc_major, templates)

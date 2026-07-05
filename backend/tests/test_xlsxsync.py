@@ -288,6 +288,18 @@ def test_rebuild_rates_and_stats_sheets():
     assert st.cell(row=2, column=9).value == "=G2/B2"
     assert "学费" in st.cell(row=2, column=2).value and "特殊" in st.cell(row=2, column=2).value
 
+    conn.execute(
+        """INSERT INTO fiscal_month_total_override (period_end, total_override_micro)
+           VALUES ('2024-01-05', 123450000)"""
+    )
+    conn.commit()
+    xlsx2 = d / "book_override.xlsx"
+    xlsxsync.export_to_xlsx(conn, target=xlsx2, backup=False, write_json=False)
+    wb2 = openpyxl.load_workbook(str(xlsx2))
+    st2 = wb2["统计"]
+    assert st2.cell(row=2, column=2).value == 123.45
+    assert st2.cell(row=2, column=4).value == "=B2/H2"
+
 
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

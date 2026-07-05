@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from . import config, money, rates
+from . import config, jsonsync, money, rates
 
 _UNCATEGORIZED = "未分类"
 _UNCAT_COLOR = "#9aa3b2"
@@ -145,18 +145,54 @@ def category_total_micro(conn: sqlite3.Connection, category_id: int,
         (category_id, start, end_excl)).fetchone()["m"]
 
 
+def _currency_by_code(conn: sqlite3.Connection, code: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT id, code, minor_unit FROM currency WHERE code = ?",
+        (str(code).upper(),),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown currency code: {code!r}")
+    return row
+
+
+def _validate_period_end(period_end: str) -> str:
+    d = _parse(period_end)
+    if d.day != config.FISCAL_DAY:
+        raise ValueError(f"fiscal period_end must be day {config.FISCAL_DAY}: {period_end!r}")
+    return d.isoformat()
+
+
+def _parse_nonnegative_amount(value, field: str):
+    dec = money.parse_decimal(value)
+    if dec is None:
+        raise ValueError(f"cannot parse {field}: {value!r}")
+    if dec < 0:
+        raise ValueError(f"{field} must be non-negative")
+    return dec
+
+
 # ---------------------------------------------------------------------------
 # Fiscal-month statistics (replicates 统计)
 # ---------------------------------------------------------------------------
 def fiscal_months(conn: sqlite3.Connection) -> list[dict]:
     base_id = rates.get_base_currency_id(conn)
     out: list[dict] = []
-    for fm in conn.execute("SELECT * FROM fiscal_month ORDER BY period_end"):
+    for fm in conn.execute(
+        """SELECT fm.*, o.total_override_micro
+           FROM fiscal_month fm
+           LEFT JOIN fiscal_month_total_override o ON o.period_end = fm.period_end
+           ORDER BY fm.period_end"""
+    ):
         period_end = fm["period_end"]
         start, end_excl = fiscal_range(period_end)
 
-        micro = expense_total_micro(conn, start, end_excl)
-        total_cny = money.base_micro_to_cny(micro)
+        computed_micro = expense_total_micro(conn, start, end_excl)
+        override_micro = fm["total_override_micro"]
+        effective_micro = override_micro if override_micro is not None else computed_micro
+        computed_total_cny = money.base_micro_to_cny(computed_micro)
+        total_cny = money.base_micro_to_cny(effective_micro)
+        override_total_cny = (money.base_micro_to_cny(override_micro)
+                              if override_micro is not None else None)
 
         cc_id = fm["credit_card_ccy_id"]
         rl = rates.lookup(conn, cc_id, period_end, base_currency_id=base_id) if cc_id else None
@@ -178,6 +214,9 @@ def fiscal_months(conn: sqlite3.Connection) -> list[dict]:
             "range_start": start,
             "range_end": _iso(_parse(end_excl) - timedelta(days=1)),  # inclusive, for chart range calls
             "total_cny": float(total_cny),
+            "computed_total_cny": float(computed_total_cny),
+            "total_cny_override": float(override_total_cny) if override_total_cny is not None else None,
+            "total_cny_overridden": override_micro is not None,
             "total_usd": float(total_usd) if total_usd is not None else None,
             "credit_card": float(cc_major),
             "credit_card_currency": _ccy_code(conn, cc_id),
@@ -187,6 +226,56 @@ def fiscal_months(conn: sqlite3.Connection) -> list[dict]:
             "rate_stale": rate_stale,
         })
     return out
+
+
+def fiscal_month(conn: sqlite3.Connection, period_end: str) -> dict:
+    pe = _validate_period_end(period_end)
+    for row in fiscal_months(conn):
+        if row["period_end"] == pe:
+            return row
+    raise KeyError(pe)
+
+
+def save_fiscal_month(conn: sqlite3.Connection, period_end: str, *, credit_card,
+                      total_cny=None, credit_card_currency: str = "USD",
+                      write_json: bool = True) -> dict:
+    """Create/update one fiscal month's manual inputs.
+
+    ``total_cny`` is optional. Blank/None clears the manual override and the
+    headline total goes back to transaction-derived calculation.
+    """
+    pe = _validate_period_end(period_end)
+    ccy = _currency_by_code(conn, credit_card_currency)
+    cc_amount = _parse_nonnegative_amount(credit_card, "credit_card")
+    cc_minor = money.to_minor(cc_amount, ccy["minor_unit"])
+
+    conn.execute(
+        """INSERT INTO fiscal_month (period_end, credit_card_amount_minor, credit_card_ccy_id)
+           VALUES (?, ?, ?)
+           ON CONFLICT(period_end) DO UPDATE SET
+               credit_card_amount_minor = excluded.credit_card_amount_minor,
+               credit_card_ccy_id = excluded.credit_card_ccy_id,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')""",
+        (pe, cc_minor, ccy["id"]),
+    )
+
+    if total_cny is None or str(total_cny).strip() == "":
+        conn.execute("DELETE FROM fiscal_month_total_override WHERE period_end = ?", (pe,))
+    else:
+        total_micro = money.cny_to_base_micro(total_cny)
+        conn.execute(
+            """INSERT INTO fiscal_month_total_override (period_end, total_override_micro)
+               VALUES (?, ?)
+               ON CONFLICT(period_end) DO UPDATE SET
+                   total_override_micro = excluded.total_override_micro,
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')""",
+            (pe, total_micro),
+        )
+
+    conn.commit()
+    if write_json:
+        jsonsync.export_json(conn)
+    return fiscal_month(conn, pe)
 
 
 def _q2(value: Decimal) -> Decimal:

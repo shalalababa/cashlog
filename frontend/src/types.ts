@@ -175,6 +175,9 @@ export interface FiscalMonth {
   range_start: string;
   range_end: string;          // inclusive, for chart range calls
   total_cny: number;
+  computed_total_cny: number;
+  total_cny_override: number | null;
+  total_cny_overridden: boolean;
   total_usd: number | null;
   credit_card: number;
   credit_card_currency: string | null;
@@ -182,6 +185,12 @@ export interface FiscalMonth {
   usd_rate: number | null;
   ratio: number | null;
   rate_stale: boolean;
+}
+
+export interface FiscalMonthInput {
+  total_cny?: string | null;
+  credit_card: string;
+  credit_card_currency?: string;
 }
 
 export interface CategoryStat {

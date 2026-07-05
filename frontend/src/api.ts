@@ -9,6 +9,7 @@ import type {
   CategoryTrend,
   Dashboard,
   FiscalMonth,
+  FiscalMonthInput,
   Meta,
   Participant,
   Person,
@@ -118,6 +119,8 @@ export const api = {
 
   // --- stats ---
   fiscal: () => req<FiscalMonth[]>("/api/stats/fiscal"),
+  saveFiscal: (period_end: string, body: FiscalMonthInput) =>
+    req<FiscalMonth>(`/api/stats/fiscal/${period_end}`, { method: "PUT", body: JSON.stringify(body) }),
   categoryBreakdown: (date_from: string, date_to: string) =>
     req<CategoryStat[]>(`/api/stats/categories?date_from=${date_from}&date_to=${date_to}`),
   categoryTrend: (date_from: string, date_to: string, granularity: string) =>
