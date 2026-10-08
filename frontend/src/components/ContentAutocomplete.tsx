@@ -23,6 +23,7 @@ export default function ContentAutocomplete({ value, direction, onChange, onPick
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const timer = useRef<number>();
+  const seq = useRef(0);   // drop responses overtaken by newer typing / a pick
 
   useEffect(() => {
     window.clearTimeout(timer.current);
@@ -31,9 +32,11 @@ export default function ContentAutocomplete({ value, direction, onChange, onPick
       setSuggestions([]);
       return;
     }
+    const mine = ++seq.current;
     timer.current = window.setTimeout(async () => {
       try {
         const list = await api.autocomplete(direction, prefix);
+        if (mine !== seq.current) return;
         // Drop an exact-match-only result (nothing left to suggest).
         const filtered = list.filter((s) => s.content !== value);
         setSuggestions(filtered);
@@ -53,6 +56,7 @@ export default function ContentAutocomplete({ value, direction, onChange, onPick
       : "";
 
   function complete(s: Suggestion) {
+    seq.current++;   // a still-pending fetch must not reopen the dropdown
     onChange(s.content);
     onPick?.(s);
     setSuggestions([]);

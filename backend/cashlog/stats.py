@@ -208,7 +208,8 @@ def fiscal_months(conn: sqlite3.Connection, today: Optional[date] = None) -> lis
            FROM fiscal_month fm
            LEFT JOIN fiscal_month_total_override o ON o.period_end = fm.period_end""")}
     usd = conn.execute("SELECT id FROM currency WHERE code = 'USD'").fetchone()
-    blank = {"credit_card_amount_minor": 0, "credit_card_ccy_id": usd["id"] if usd else None,
+    usd_id = usd["id"] if usd else None
+    blank = {"credit_card_amount_minor": 0, "credit_card_ccy_id": usd_id,
              "total_override_micro": None}
     out: list[dict] = []
     for period_end in _fiscal_periods(conn, list(stored), today or date.today()):
@@ -223,10 +224,17 @@ def fiscal_months(conn: sqlite3.Connection, today: Optional[date] = None) -> lis
         override_total_cny = (money.base_micro_to_cny(override_micro)
                               if override_micro is not None else None)
 
-        cc_id = fm["credit_card_ccy_id"]
-        rl = rates.lookup(conn, cc_id, period_end, base_currency_id=base_id) if cc_id else None
+        # 美元换算 / 当日汇率 are always USD figures; the credit card may be in
+        # another currency, so it is converted with its own rate.
+        rl = rates.lookup(conn, usd_id, period_end, base_currency_id=base_id) if usd_id else None
         usd_rate = Decimal(rl.rate_to_base) if rl else None
         rate_stale = bool(rl and rates.is_stale(rl.stale_days))
+        cc_id = fm["credit_card_ccy_id"]
+        if cc_id == usd_id:
+            cc_rate = usd_rate
+        else:
+            cc_rl = rates.lookup(conn, cc_id, period_end, base_currency_id=base_id) if cc_id else None
+            cc_rate = Decimal(cc_rl.rate_to_base) if cc_rl else None
 
         cc_minor = fm["credit_card_amount_minor"]
         cc_minor_unit = conn.execute(
@@ -235,7 +243,7 @@ def fiscal_months(conn: sqlite3.Connection, today: Optional[date] = None) -> lis
                     if cc_minor_unit else Decimal(0))
 
         total_usd = (_q2(total_cny / usd_rate) if usd_rate and usd_rate != 0 else None)
-        cc_cny = _q2(cc_major * usd_rate) if usd_rate is not None else None
+        cc_cny = _q2(cc_major * cc_rate) if cc_rate is not None else None
         ratio = (float(cc_cny / total_cny) if cc_cny is not None and total_cny != 0 else None)
 
         out.append({
@@ -255,6 +263,17 @@ def fiscal_months(conn: sqlite3.Connection, today: Optional[date] = None) -> lis
             "rate_stale": rate_stale,
         })
     return out
+
+
+def fiscal_headline_micro(conn: sqlite3.Connection, period_end: str) -> int:
+    """The fiscal month's headline total as the stats page shows it: the manual
+    override when one is set, else the computed SUMIFS total."""
+    row = conn.execute("SELECT total_override_micro FROM fiscal_month_total_override "
+                       "WHERE period_end = ?", (period_end,)).fetchone()
+    if row is not None and row["total_override_micro"] is not None:
+        return row["total_override_micro"]
+    start, end_excl = fiscal_range(period_end)
+    return expense_total_micro(conn, start, end_excl)
 
 
 def fiscal_month(conn: sqlite3.Connection, period_end: str) -> dict:

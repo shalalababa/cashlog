@@ -170,7 +170,12 @@ def test_export_clears_stale_template_rows():
     ws.cell(row=9, column=4).value = "另一条幽灵"
     wb.save(str(xlsx))
 
-    _export(conn, xlsx)  # re-export should clear rows 5..9
+    # The junk is unimported sheet content, so a plain export now refuses...
+    import pytest
+    with pytest.raises(xlsxsync.PendingSheetChangesError):
+        _export(conn, xlsx)
+    # ...and an explicit overwrite clears rows 5..9.
+    xlsxsync.export_to_xlsx(conn, target=xlsx, backup=False, write_json=False, force=True)
     s = xlsxsync.diff_from_xlsx(conn, xlsx).summary()
     assert s["new"] == 0 and s["anomalies"] == 0
     assert s["unchanged"] == 4

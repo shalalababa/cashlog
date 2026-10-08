@@ -164,7 +164,21 @@ def _currency(conn, code: str) -> sqlite3.Row:
     return row
 
 
-def create_txn(conn: sqlite3.Connection, data: dict, *, write_json: bool = True) -> dict:
+def _apply_aa_payload(conn: sqlite3.Connection, txn_id: int, aa) -> None:
+    from . import aa_service  # local import: aa_service imports this module
+    if aa is None:
+        aa_service.remove_txn_aa(conn, txn_id)
+    else:
+        aa_service.apply_txn_aa(conn, txn_id, aa.get("payer_id"), aa.get("participants") or [],
+                                bool(aa.get("settled", False)))
+
+
+def create_txn(conn: sqlite3.Connection, data: dict, *, write_json: bool = True,
+               extra_writes=None) -> dict:
+    """Insert a txn. AA is never taken from loose is_aa/payer_id/aa_settled
+    fields (that left is_aa=1 rows with no participants, counted as 0); pass
+    ``data["aa"] = {payer_id, participants, settled}`` to create it as AA in the
+    same transaction. ``extra_writes(txn_id)`` runs inside that transaction too."""
     txn_date = _validate_iso_date(data["date"])
     direction = _validate_direction(data["direction"])
     cur = _currency(conn, data["currency"])
@@ -178,21 +192,37 @@ def create_txn(conn: sqlite3.Connection, data: dict, *, write_json: bool = True)
                    currency_id, content, category_id, note, is_aa, payer_id, aa_settled,
                    rate_used, rate_date_used, base_amount_micro, rate_stale_days,
                    revision, source_sheet)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'app')""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?, ?, 1, 'app')""",
             (uid, txn_date, direction, amount_minor, cur["id"],
              data.get("content", ""), data.get("category_id"), data.get("note"),
-             int(data.get("is_aa", 0)), data.get("payer_id"), int(data.get("aa_settled", 0)),
              rate_used, rate_date, base_micro, stale))
+        txn_id = cursor.lastrowid
+        if data.get("aa") is not None:
+            _apply_aa_payload(conn, txn_id, data["aa"])
+        if extra_writes is not None:
+            extra_writes(txn_id)
     except sqlite3.IntegrityError as exc:
+        conn.rollback()
         raise ValueError(str(exc)) from exc
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
     if write_json:
         jsonsync.export_json(conn)
-    return get_txn(conn, cursor.lastrowid)
+    return get_txn(conn, txn_id)
 
 
 def update_txn(conn: sqlite3.Connection, txn_id: int, data: dict, *,
                write_json: bool = True) -> dict:
+    """Update a txn's core fields, atomically with its AA state.
+
+    * ``"aa" in data``: a dict sets/replaces the AA split, ``None`` clears AA.
+    * no ``"aa"`` key: the existing AA (if any) is kept and, when the amount /
+      currency / direction changed, its shares are recomputed from the stored
+      rule — or the edit is rejected if that rule no longer fits (fixed shares).
+    Loose is_aa / payer_id / aa_settled fields are ignored.
+    """
     existing = conn.execute("SELECT * FROM txn WHERE id = ?", (txn_id,)).fetchone()
     if existing is None:
         raise KeyError(txn_id)
@@ -205,16 +235,26 @@ def update_txn(conn: sqlite3.Connection, txn_id: int, data: dict, *,
     try:
         conn.execute(
             """UPDATE txn SET txn_date=?, direction=?, amount_minor=?, currency_id=?,
-                   content=?, category_id=?, note=?, is_aa=?, payer_id=?, aa_settled=?,
+                   content=?, category_id=?, note=?,
                    rate_used=?, rate_date_used=?, base_amount_micro=?, rate_stale_days=?,
                    revision = revision + 1
                WHERE id = ?""",
             (txn_date, direction, amount_minor, cur["id"],
              data.get("content", ""), data.get("category_id"), data.get("note"),
-             int(data.get("is_aa", 0)), data.get("payer_id"), int(data.get("aa_settled", 0)),
              rate_used, rate_date, base_micro, stale, txn_id))
+        if "aa" in data:
+            _apply_aa_payload(conn, txn_id, data["aa"])
+        elif existing["is_aa"] and (amount_minor != existing["amount_minor"]
+                                    or cur["id"] != existing["currency_id"]
+                                    or direction != existing["direction"]):
+            from . import aa_service
+            aa_service.resplit_txn_aa(conn, txn_id)
     except sqlite3.IntegrityError as exc:
+        conn.rollback()
         raise ValueError(str(exc)) from exc
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
     if write_json:
         jsonsync.export_json(conn)

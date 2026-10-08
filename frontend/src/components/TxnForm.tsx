@@ -111,6 +111,10 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
       return;
     }
     if (form.is_aa) {
+      if (amt < 0) {
+        setError("AA 不支持负数金额");
+        return;
+      }
       if (aa.members.length === 0) {
         setError("AA 需要至少一名参与人");
         return;
@@ -129,19 +133,23 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
     }
     setSaving(true);
     try {
-      const saved = editing ? await api.updateTxn(editing.id, form) : await api.createTxn(form);
+      // The txn and its AA split go in ONE request so the backend writes them
+      // atomically: a rejected split can no longer leave a half-saved txn
+      // behind (which a retry then duplicated).
+      const body = { ...form };
       if (form.is_aa) {
-        await api.setTxnAA(saved.id, {
+        body.aa = {
           payer_id: aa.payerId,
           settled: aa.settled,
           participants: aa.members.map((id) => ({
             person_id: id,
             ...(aa.splitMode === "fixed" ? { fixed_amount: aa.fixed[id] ?? "0" } : {}),
           })),
-        });
+        };
       } else if (editing?.is_aa) {
-        await api.clearTxnAA(saved.id);
+        body.aa = null;   // turned AA off
       }
+      const saved = editing ? await api.updateTxn(editing.id, body) : await api.createTxn(body);
       onSaved(saved);
     } catch (e) {
       setError((e as Error).message);

@@ -185,7 +185,9 @@ def _default_refresh_start(conn: sqlite3.Connection, currency_id: int) -> Option
         (currency_id, config.STALE_RATE_DAYS),
     ).fetchone()["d"]
     if stale:
-        return stale
+        # Reach back a week: a weekend/holiday txn needs the previous business
+        # day's rate, which a fetch starting on the txn date itself never gets.
+        return (_parse_iso(stale) - timedelta(days=config.STALE_RATE_DAYS)).isoformat()
     last = conn.execute(
         "SELECT MAX(rate_date) AS d FROM exchange_rate WHERE currency_id = ?",
         (currency_id,),

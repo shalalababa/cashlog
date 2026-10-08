@@ -146,7 +146,8 @@ export const api = {
 
   // --- xlsx sync ---
   xlsxDiff: () => req<XlsxDiffResult>("/api/xlsx/diff"),
-  xlsxExport: () => req<XlsxExportResult>("/api/xlsx/export", { method: "POST" }),
+  xlsxExport: (force = false) =>
+    req<XlsxExportResult>("/api/xlsx/export", { method: "POST", body: JSON.stringify({ force }) }),
   xlsxImport: (body: { apply_deletions?: boolean; apply_conflicts?: boolean } = {}) =>
     req<XlsxImportResult>("/api/xlsx/import", { method: "POST", body: JSON.stringify(body) }),
 };

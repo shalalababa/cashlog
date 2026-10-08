@@ -40,9 +40,32 @@ def parse_decimal(value: Optional[Number]) -> Optional[Decimal]:
     if not text:
         return None
     try:
-        return Decimal(text)
+        dec = Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+    # NaN / Infinity are not amounts; refusing them here keeps them from
+    # reaching quantize() (InvalidOperation -> HTTP 500) or the database.
+    return dec if dec.is_finite() else None
+
+
+# Largest magnitude we store: SQLite INTEGER is signed 64-bit. Anything near it
+# is a typo, not a real amount, and must fail as a clean ValueError (-> 400)
+# instead of an OverflowError / InvalidOperation (-> 500).
+_INT_LIMIT = 2 ** 63 - 1
+_MAX_MAJOR = Decimal(10) ** 12
+
+
+def _bounded(dec: Decimal, raw) -> Decimal:
+    if abs(dec) > _MAX_MAJOR:
+        raise ValueError(f"amount out of range: {raw!r}")
+    return dec
+
+
+def _checked_int(value: Decimal, raw) -> int:
+    n = int(value)
+    if abs(n) > _INT_LIMIT:
+        raise ValueError(f"amount out of range: {raw!r}")
+    return n
 
 
 def _quantum(minor_unit: int) -> Decimal:
@@ -54,8 +77,9 @@ def to_minor(amount_major: Number, minor_unit: int) -> int:
     dec = parse_decimal(amount_major)
     if dec is None:
         raise ValueError(f"cannot parse amount: {amount_major!r}")
+    dec = _bounded(dec, amount_major)
     scaled = (dec * (Decimal(10) ** minor_unit)).quantize(Decimal(1), rounding=ROUND_HALF_UP)
-    return int(scaled)
+    return _checked_int(scaled, amount_major)
 
 
 def from_minor(amount_minor: int, minor_unit: int) -> Decimal:
@@ -76,7 +100,7 @@ def to_base_micro(amount_minor: int, minor_unit: int, rate_to_base: Number) -> i
     amount_major = Decimal(amount_minor) / (Decimal(10) ** minor_unit)
     base_cny = amount_major * rate
     micro = (base_cny * _MICRO).quantize(Decimal(1), rounding=ROUND_HALF_UP)
-    return int(micro)
+    return _checked_int(micro, amount_minor)
 
 
 def cny_to_base_micro(amount_cny: Number) -> int:
@@ -88,8 +112,9 @@ def cny_to_base_micro(amount_cny: Number) -> int:
     dec = parse_decimal(amount_cny)
     if dec is None:
         raise ValueError(f"cannot parse amount: {amount_cny!r}")
+    dec = _bounded(dec, amount_cny)
     micro = (dec * _MICRO).quantize(Decimal(1), rounding=ROUND_HALF_UP)
-    return int(micro)
+    return _checked_int(micro, amount_cny)
 
 
 def base_micro_to_cny(base_micro: int) -> Decimal:

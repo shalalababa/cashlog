@@ -38,7 +38,9 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
     [categories]
   );
 
-  function load() {
+  // keepDrafts: after saving one row, keep unsaved edits typed in the other
+  // rows (only `savedCid`, if any, is reset to the server value).
+  function load(keepDrafts = false, savedCid: number | null = null) {
     api.budgetStatus()
       .then((s) => {
         setStatus(s);
@@ -53,11 +55,16 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
           };
         }
         setOverallCurrency("CNY");
-        setEdits(m);
+        setEdits((prev) => {
+          if (!keepDrafts) return m;
+          const merged = { ...m };
+          for (const [k, v] of Object.entries(prev)) if (k !== String(savedCid)) merged[k] = v;
+          return merged;
+        });
       })
       .catch((e) => notify(e.message, true));
   }
-  useEffect(load, []);
+  useEffect(() => load(), []);
 
   const statusByCat = useMemo(() => {
     const m: Record<string, CategoryBudgetStatus> = {};
@@ -86,8 +93,11 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
   async function saveOverall() {
     try {
       if (!overall.trim()) {
-        if (status?.overall.budget_id != null) await api.deleteBudget(status.overall.budget_id);
-        else { return; }
+        if (status?.overall.budget_id == null) return;
+        // An empty box (e.g. right after switching ¥/$) must not silently
+        // delete an existing overall budget.
+        if (!window.confirm("总预算输入为空，要删除现有的总预算吗？")) return;
+        await api.deleteBudget(status.overall.budget_id);
       } else {
         await api.setBudget({
           category_id: null,
@@ -98,7 +108,7 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
         });
       }
       notify("总预算已更新");
-      load();
+      load(true);
       onChanged?.();
     } catch (e) {
       notify((e as Error).message, true);
@@ -118,7 +128,7 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
         percent: e.type === "percent" ? e.value.trim() : null,
       });
       notify("分类预算已更新");
-      load();
+      load(true, cid);
       onChanged?.();
     } catch (err) {
       notify((err as Error).message, true);
@@ -134,7 +144,7 @@ export default function BudgetView({ categories, notify, onChanged }: Props) {
     try {
       await api.deleteBudget(st.budget_id);
       notify("已清除");
-      load();
+      load(true, cid);
       onChanged?.();
     } catch (e) {
       notify((e as Error).message, true);

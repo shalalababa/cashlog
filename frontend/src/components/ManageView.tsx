@@ -8,28 +8,30 @@ interface Props {
   notify: (msg: string, error?: boolean) => void;
   onChanged: () => void;
   onRatesChanged: () => void;
+  /** Ledger + meta must refetch after an xlsx import changes txns. */
+  onTxnsChanged: () => void;
 }
 
 const PALETTE = ["#FF6B6B", "#4D96FF", "#6BCB77", "#FFD93D", "#9B5DE5", "#00BBF9", "#F15BB5", "#FF9F1C"];
 
-export default function ManageView({ categories, currencies, notify, onChanged, onRatesChanged }: Props) {
+export default function ManageView({ categories, currencies, notify, onChanged, onRatesChanged, onTxnsChanged }: Props) {
   return (
     <div className="manage-grid">
-      <CategorySection kind="expense" title="支出分类" categories={categories} onChanged={onChanged} />
+      <CategorySection kind="expense" title="支出分类" categories={categories} onChanged={onChanged} notify={notify} />
       <div>
-        <CategorySection kind="income" title="入账分类" categories={categories} onChanged={onChanged} />
+        <CategorySection kind="income" title="入账分类" categories={categories} onChanged={onChanged} notify={notify} />
         <div style={{ height: 18 }} />
-        <PeopleSection />
+        <PeopleSection notify={notify} />
         <div style={{ height: 18 }} />
         <CurrencySection currencies={currencies} notify={notify} onRatesChanged={onRatesChanged} />
         <div style={{ height: 18 }} />
-        <XlsxSyncSection notify={notify} />
+        <XlsxSyncSection notify={notify} onTxnsChanged={onTxnsChanged} />
       </div>
     </div>
   );
 }
 
-function PeopleSection() {
+function PeopleSection({ notify }: { notify: (msg: string, error?: boolean) => void }) {
   const [people, setPeople] = useState<Person[]>([]);
   const [name, setName] = useState("");
   const load = () => api.persons().then(setPeople).catch(() => setPeople([]));
@@ -43,8 +45,8 @@ function PeopleSection() {
       await api.createPerson(name.trim());
       setName("");
       load();
-    } catch {
-      /* duplicate */
+    } catch (e) {
+      notify((e as Error).message, true);
     }
   }
 
@@ -58,7 +60,7 @@ function PeopleSection() {
             {p.is_self === 1 && <span className="badge aa">本人</span>}
             <span className="grow" />
             {p.is_self !== 1 && (
-              <button className="btn sm ghost" onClick={() => api.updatePerson(p.id, { active: p.active ? 0 : 1 }).then(load)}>
+              <button className="btn sm ghost" onClick={() => api.updatePerson(p.id, { active: p.active ? 0 : 1 }).then(load).catch((e) => notify(e.message, true))}>
                 {p.active ? "停用" : "启用"}
               </button>
             )}
@@ -78,11 +80,13 @@ function CategorySection({
   title,
   categories,
   onChanged,
+  notify,
 }: {
   kind: "expense" | "income";
   title: string;
   categories: Category[];
   onChanged: () => void;
+  notify: (msg: string, error?: boolean) => void;
 }) {
   const [name, setName] = useState("");
   const [color, setColor] = useState(PALETTE[0]);
@@ -90,13 +94,21 @@ function CategorySection({
 
   async function add() {
     if (!name.trim()) return;
-    await api.createCategory({ name: name.trim(), kind, color });
-    setName("");
-    onChanged();
+    try {
+      await api.createCategory({ name: name.trim(), kind, color });
+      setName("");
+      onChanged();
+    } catch (e) {
+      notify((e as Error).message, true);   // e.g. duplicate name
+    }
   }
   async function toggle(c: Category, patch: Partial<Category>) {
-    await api.updateCategory(c.id, patch);
-    onChanged();
+    try {
+      await api.updateCategory(c.id, patch);
+      onChanged();
+    } catch (e) {
+      notify((e as Error).message, true);
+    }
   }
 
   return (
@@ -221,14 +233,28 @@ function summaryText(summary: {
   return `新增 ${summary.new}，修改 ${summary.modified}，删除候选 ${summary.deleted}，冲突 ${summary.conflict}，异常 ${summary.anomalies}，仅数据库 ${summary.db_only}，未变 ${summary.unchanged}`;
 }
 
-function XlsxSyncSection({ notify }: { notify: (msg: string, error?: boolean) => void }) {
+function XlsxSyncSection({ notify, onTxnsChanged }: {
+  notify: (msg: string, error?: boolean) => void;
+  onTxnsChanged: () => void;
+}) {
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof api.xlsxDiff>> | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function exportXlsx() {
     setBusy(true);
     try {
-      const out = await api.xlsxExport();
+      let out;
+      try {
+        out = await api.xlsxExport();
+      } catch (e) {
+        // The backend refuses to wipe sheet edits that were never imported;
+        // overwriting them is an explicit choice (it backs the file up first).
+        const msg = (e as Error).message;
+        if (!msg.includes("尚未导入的改动")) throw e;
+        if (!window.confirm(`${msg}\n\n仍然用应用里的数据覆盖表格吗？（会先备份原表格）`)) return;
+        out = await api.xlsxExport(true);
+      }
+      setPreview(null);
       notify(`已同步到表格：支出 ${out.written.expense}，入账 ${out.written.income}`);
     } catch (e) {
       notify((e as Error).message, true);
@@ -264,6 +290,7 @@ function XlsxSyncSection({ notify }: { notify: (msg: string, error?: boolean) =>
       const out = await api.xlsxImport();
       setPreview({ summary: out.summary });
       notify(`已从表格同步：新增 ${out.applied.new}，修改 ${out.applied.modified}`);
+      onTxnsChanged();
     } catch (e) {
       notify((e as Error).message, true);
     } finally {

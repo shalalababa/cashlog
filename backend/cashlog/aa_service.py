@@ -93,7 +93,7 @@ def _parse_weight(raw) -> Optional[str]:
         d = Decimal(str(raw))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"invalid weight: {raw!r}") from exc
-    if d <= 0:
+    if not d.is_finite() or d <= 0:
         raise ValueError(f"weight must be positive: {raw!r}")
     return str(d)
 
@@ -142,6 +142,22 @@ def set_txn_aa(conn: sqlite3.Connection, txn_id: int, payer_id: Optional[int],
     participants: [{person_id, weight?, fixed_amount}]; fixed_amount is a major
     string and converted to minor here.
     """
+    try:
+        apply_txn_aa(conn, txn_id, payer_id, participants, settled)
+    except Exception:
+        conn.rollback()
+        raise
+    conn.commit()
+    if write_json:
+        jsonsync.export_json(conn)
+    return get_txn_aa(conn, txn_id)
+
+
+def apply_txn_aa(conn: sqlite3.Connection, txn_id: int, payer_id: Optional[int],
+                 participants: List[dict], settled: bool = False) -> None:
+    """set_txn_aa without the commit, so callers (create/update txn, receipt
+    generation) can make the txn and its AA split one atomic write. Validates
+    everything before touching any row."""
     txn = conn.execute(
         "SELECT t.amount_minor, t.direction, cur.minor_unit FROM txn t "
         "JOIN currency cur ON cur.id = t.currency_id WHERE t.id = ?", (txn_id,)).fetchone()
@@ -176,19 +192,46 @@ def set_txn_aa(conn: sqlite3.Connection, txn_id: int, payer_id: Optional[int],
             "INSERT INTO txn_participant (txn_id, person_id, weight, fixed_amount_minor, owed_amount_minor) "
             "VALUES (?, ?, ?, ?, ?)",
             (txn_id, p["person_id"], p["weight"], p["fixed_amount_minor"], o))
-    conn.commit()
-    if write_json:
-        jsonsync.export_json(conn)
-    return get_txn_aa(conn, txn_id)
+
+
+def resplit_txn_aa(conn: sqlite3.Connection, txn_id: int) -> None:
+    """Recompute an AA txn's owed shares from its stored rule (equal / weighted /
+    fixed) after its amount, currency or direction changed. No commit. Raises
+    ValueError when the stored rule no longer fits (fixed shares that no longer
+    sum to the new amount, or the txn is no longer a non-negative expense)."""
+    txn = conn.execute("SELECT amount_minor, direction FROM txn WHERE id = ?", (txn_id,)).fetchone()
+    if txn["direction"] != "expense":
+        raise ValueError("AA 交易只能是支出；如需改为入账，请先取消 AA")
+    if txn["amount_minor"] < 0:
+        raise ValueError("AA 交易金额不能为负；如需修改，请先取消 AA")
+    rows = conn.execute(
+        "SELECT person_id, weight, fixed_amount_minor FROM txn_participant "
+        "WHERE txn_id = ? ORDER BY person_id", (txn_id,)).fetchall()
+    if not rows:
+        return
+    norm = [{"person_id": r["person_id"], "weight": r["weight"],
+             "fixed_amount_minor": r["fixed_amount_minor"]} for r in rows]
+    try:
+        owed = aa.compute_owed(txn["amount_minor"], norm)
+    except ValueError as exc:
+        raise ValueError("该 AA 按固定金额分摊，修改金额后请同时调整各人的分摊金额") from exc
+    for r, o in zip(rows, owed):
+        conn.execute("UPDATE txn_participant SET owed_amount_minor = ? WHERE txn_id = ? AND person_id = ?",
+                     (o, txn_id, r["person_id"]))
 
 
 def clear_txn_aa(conn: sqlite3.Connection, txn_id: int, *, write_json: bool = True) -> dict:
-    conn.execute("UPDATE txn SET is_aa = 0, payer_id = NULL, aa_settled = 0 WHERE id = ?", (txn_id,))
-    conn.execute("DELETE FROM txn_participant WHERE txn_id = ?", (txn_id,))
+    remove_txn_aa(conn, txn_id)
     conn.commit()
     if write_json:
         jsonsync.export_json(conn)
     return get_txn_aa(conn, txn_id)
+
+
+def remove_txn_aa(conn: sqlite3.Connection, txn_id: int) -> None:
+    """clear_txn_aa without the commit."""
+    conn.execute("UPDATE txn SET is_aa = 0, payer_id = NULL, aa_settled = 0 WHERE id = ?", (txn_id,))
+    conn.execute("DELETE FROM txn_participant WHERE txn_id = ?", (txn_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +460,21 @@ def save_session(conn: sqlite3.Connection, data: dict, *, write_json: bool = Tru
     mu = cur["minor_unit"]
     total_minor = money.to_minor(data["total_with_tax"], mu)
     items = data.get("items", [])
+    # Validate up front so bad input is a clean 400, not a leaked CHECK /
+    # FOREIGN KEY / UNIQUE IntegrityError from the inserts below.
+    if total_minor < 0:
+        raise ValueError("含税总价不能为负")
+    for it in items:
+        if money.to_minor(it["pretax"], mu) < 0:
+            raise ValueError("小项税前金额不能为负")
+        shares = it.get("shares") or [{"person_id": pid} for pid in it.get("person_ids", [])]
+        if shares:
+            _validate_aa_persons(conn, None, [sh["person_id"] for sh in shares])
+            for sh in shares:
+                _parse_weight(sh.get("weight"))
+    if data.get("payer_id") is not None and conn.execute(
+            "SELECT 1 FROM person WHERE id = ?", (data["payer_id"],)).fetchone() is None:
+        raise ValueError(f"unknown person id(s): [{data['payer_id']}]")
     tax_minor = max(total_minor - sum(money.to_minor(it["pretax"], mu) for it in items), 0)
 
     sid = data.get("id")
@@ -468,18 +526,20 @@ def generate_txn_from_session(conn: sqlite3.Connection, session_id: int, *,
         raise ValueError("该小票已生成过 AA 交易")
     if not s["result"]:
         raise ValueError("session has no participants/items to generate from")
+    if s["payer_id"] is None:
+        raise ValueError("请先选择付款人")
+    participants = [{"person_id": r["person_id"], "fixed_amount": r["amount"]} for r in s["result"]]
+    # One atomic write: the txn, its AA split and the receipt link either all
+    # land or none do (no stray full-amount txn when the split is rejected).
     txn = service.create_txn(conn, {
         "date": date, "direction": "expense", "amount": s["total_with_tax"],
         "currency": s["currency"], "content": content, "category_id": category_id,
-    }, write_json=False)
-    participants = [{"person_id": r["person_id"], "fixed_amount": r["amount"]} for r in s["result"]]
-    set_txn_aa(conn, txn["id"], s["payer_id"], participants, write_json=False)
-    conn.execute("INSERT INTO aa_session_txn (session_id, txn_id) VALUES (?, ?)",
-                 (session_id, txn["id"]))
-    conn.commit()
+        "aa": {"payer_id": s["payer_id"], "participants": participants, "settled": False},
+    }, write_json=False, extra_writes=lambda txn_id: conn.execute(
+        "INSERT INTO aa_session_txn (session_id, txn_id) VALUES (?, ?)", (session_id, txn_id)))
     if write_json:
         jsonsync.export_json(conn)
-    return service.get_txn(conn, txn["id"])
+    return txn
 
 
 def _session_txn(conn: sqlite3.Connection, session_id: int) -> Optional[int]:

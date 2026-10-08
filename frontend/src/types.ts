@@ -79,6 +79,13 @@ export interface Suggestion {
   category_id: number | null;
 }
 
+/** AA split sent with a txn save (one atomic request). */
+export interface TxnAAInput {
+  payer_id: number | null;
+  settled: boolean;
+  participants: { person_id: number; weight?: string; fixed_amount?: string }[];
+}
+
 export interface TxnInput {
   date: string;
   direction: "expense" | "income";
@@ -89,6 +96,8 @@ export interface TxnInput {
   note: string | null;
   is_aa: boolean;
   aa_settled: boolean;
+  /** Set: save AA with the txn; null: clear AA; omitted: keep existing AA. */
+  aa?: TxnAAInput | null;
 }
 
 export interface Person {

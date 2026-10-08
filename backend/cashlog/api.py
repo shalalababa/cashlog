@@ -70,6 +70,18 @@ def get_conn():
 
 
 # --- request models ---------------------------------------------------------
+class ParticipantIn(BaseModel):
+    person_id: int
+    weight: Optional[str] = None
+    fixed_amount: Optional[str] = None
+
+
+class TxnAAIn(BaseModel):
+    payer_id: Optional[int] = None
+    participants: list[ParticipantIn]
+    settled: bool = False
+
+
 class TxnIn(BaseModel):
     date: str
     direction: str
@@ -78,9 +90,21 @@ class TxnIn(BaseModel):
     content: str = ""
     category_id: Optional[int] = None
     note: Optional[str] = None
+    # Legacy fields, accepted but ignored: AA state is only written via `aa`
+    # (same transaction as the txn) or the /aa endpoints.
     is_aa: bool = False
     payer_id: Optional[int] = None
     aa_settled: bool = False
+    # Set -> make/replace the AA split atomically with the txn; explicit null
+    # -> clear AA (update only); omitted -> keep the existing AA (re-split if
+    # the amount changed).
+    aa: Optional[TxnAAIn] = None
+
+    def service_payload(self) -> dict:
+        data = self.model_dump(exclude={"aa"})
+        if "aa" in self.model_fields_set:
+            data["aa"] = self.aa.model_dump() if self.aa is not None else None
+        return data
 
     @field_validator("date")
     @classmethod
@@ -158,7 +182,7 @@ def list_txns(
 @app.post("/api/txns", status_code=201)
 def create_txn(body: TxnIn, conn=Depends(get_conn)):
     try:
-        return service.create_txn(conn, body.model_dump())
+        return service.create_txn(conn, body.service_payload())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -174,7 +198,7 @@ def get_txn(txn_id: int, conn=Depends(get_conn)):
 @app.put("/api/txns/{txn_id}")
 def update_txn(txn_id: int, body: TxnIn, conn=Depends(get_conn)):
     try:
-        return service.update_txn(conn, txn_id, body.model_dump())
+        return service.update_txn(conn, txn_id, body.service_payload())
     except KeyError:
         raise HTTPException(status_code=404, detail="not found")
     except ValueError as exc:
@@ -264,18 +288,6 @@ def update_person(person_id: int, body: PersonPatch, conn=Depends(get_conn)):
 
 
 # --- AA: structured AA on a transaction -------------------------------------
-class ParticipantIn(BaseModel):
-    person_id: int
-    weight: Optional[str] = None
-    fixed_amount: Optional[str] = None
-
-
-class TxnAAIn(BaseModel):
-    payer_id: Optional[int] = None
-    participants: list[ParticipantIn]
-    settled: bool = False
-
-
 @app.get("/api/txns/{txn_id}/aa")
 def get_txn_aa(txn_id: int, conn=Depends(get_conn)):
     try:
@@ -549,6 +561,11 @@ class XlsxImportIn(BaseModel):
     apply_conflicts: bool = False
 
 
+class XlsxExportIn(BaseModel):
+    # Overwrite even if the workbook holds edits never imported (backup kept).
+    force: bool = False
+
+
 @app.get("/api/xlsx/diff")
 def xlsx_diff(conn=Depends(get_conn)):
     try:
@@ -561,10 +578,10 @@ def xlsx_diff(conn=Depends(get_conn)):
 
 
 @app.post("/api/xlsx/export")
-def xlsx_export(conn=Depends(get_conn)):
+def xlsx_export(body: Optional[XlsxExportIn] = None, conn=Depends(get_conn)):
     try:
-        return xlsxsync.export_to_xlsx(conn)
-    except xlsxsync.WorkbookLockedError as exc:
+        return xlsxsync.export_to_xlsx(conn, force=bool(body and body.force))
+    except (xlsxsync.WorkbookLockedError, xlsxsync.PendingSheetChangesError) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -580,6 +597,8 @@ def xlsx_import(body: XlsxImportIn, conn=Depends(get_conn)):
         return {"summary": diff.summary(), "applied": applied}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except xlsxsync.WorkbookLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

@@ -37,7 +37,7 @@ from typing import Any, Optional
 import openpyxl
 from openpyxl.styles import Alignment
 
-from . import config, importer, jsonsync, money, rates
+from . import config, importer, jsonsync, money, rates, stats
 
 # direction -> sheet name + the workbook's column-D header
 DATA_SHEETS = {
@@ -73,9 +73,13 @@ def _header(content_header: str) -> list:
 
 
 def _db_hash(direction: str, txn_date: str, amount_minor: int, code: str,
-             content: str, cat_name: Optional[str], note: Optional[str]) -> str:
+             content: str, cat_name: Optional[str], note: Optional[str] = None) -> str:
+    """Row hash over exactly what a sheet row can carry. The note has no column,
+    so it is left out (a txn with a note used to diff as "modified" right after
+    a clean export); content / category are stripped the same way the diff
+    reads them back. ``note`` is accepted for call-site compatibility only."""
     return importer._row_hash(direction, txn_date, amount_minor, code,
-                              content or "", cat_name or "", note or "")
+                              (content or "").strip(), (cat_name or "").strip(), "")
 
 
 def _fetch_txns(conn: sqlite3.Connection, direction: str) -> list:
@@ -200,30 +204,31 @@ def _rebuild_stats_sheet(conn: sqlite3.Connection, wb, base_id: int,
     for col, h in enumerate(headers, start=1):
         _write_cell(ws, 1, col, h, templates, date_cell=(col == 1))
 
+    # Same months as the app's 统计 page (auto-filled up to the current one).
+    ccy_names = {row["code"]: row["name"] for row in conn.execute("SELECT code, name FROM currency")}
     r = 2
-    for fm in conn.execute(
-        """SELECT fm.*, o.total_override_micro
-           FROM fiscal_month fm
-           LEFT JOIN fiscal_month_total_override o ON o.period_end = fm.period_end
-           ORDER BY fm.period_end"""
-    ):
+    for fm in stats.fiscal_months(conn):
         pe = fm["period_end"]
-        rl = rates.lookup(conn, usd_id, pe, base_currency_id=base_id) if usd_id else None
-        usd_rate = float(rl.rate_to_base) if rl else None
-        cc_major = float(money.from_minor(fm["credit_card_amount_minor"], 2))
-        total_override = fm["total_override_micro"]
+        usd_rate = fm["usd_rate"]
+        cc_code = fm["credit_card_currency"] or "USD"
+        cc_major = fm["credit_card"]
+        total_override = fm["total_cny_override"]
         _write_cell(ws, r, 1, date.fromisoformat(pe), templates, date_cell=True)
         if total_override is None:
             _write_cell(ws, r, 2,
                         f'=SUMIFS(支出!$F:$F, 支出!$A:$A,">="&EDATE($A{r},-1), '
                         f'支出!$A:$A,"<"&$A{r}{excl_terms})', templates)
         else:
-            _write_cell(ws, r, 2, float(money.base_micro_to_cny(total_override)), templates)
+            _write_cell(ws, r, 2, float(total_override), templates)
         _write_cell(ws, r, 3, "人民币", templates)
         _write_cell(ws, r, 4, f"=B{r}/H{r}", templates)
         _write_cell(ws, r, 5, cc_major, templates)
-        _write_cell(ws, r, 6, "美元", templates)
-        _write_cell(ws, r, 7, f"=E{r}*H{r}", templates)
+        _write_cell(ws, r, 6, ccy_names.get(cc_code, cc_code), templates)
+        if cc_code == "USD":
+            _write_cell(ws, r, 7, f"=E{r}*H{r}", templates)
+        else:  # card in another currency: its own rate, not the USD one
+            cc_cny = fm["credit_card_cny"]
+            _write_cell(ws, r, 7, cc_cny, templates)
         _write_cell(ws, r, 8, usd_rate, templates)
         _write_cell(ws, r, 9, f"=G{r}/B{r}", templates)
         r += 1
@@ -233,11 +238,38 @@ def _rebuild_stats_sheet(conn: sqlite3.Connection, wb, base_id: int,
 # ---------------------------------------------------------------------------
 # Export: DB -> xlsx
 # ---------------------------------------------------------------------------
+class PendingSheetChangesError(Exception):
+    """The workbook holds edits not yet imported; exporting would discard them."""
+
+    def __init__(self, summary: dict):
+        self.summary = summary
+        parts = [f"{label} {summary[k]}" for k, label in
+                 (("new", "新增"), ("modified", "修改"), ("deleted", "删除"),
+                  ("conflict", "冲突"), ("unknown_uid", "未知UID"), ("anomalies", "异常"))
+                 if summary.get(k)]
+        super().__init__("表格里有尚未导入的改动（" + "，".join(parts) +
+                         "）。直接同步到表格会覆盖它们；请先「从表格同步」，或确认后强制覆盖。")
+
+
+def pending_sheet_changes(diff: "SyncDiff") -> int:
+    s = diff.summary()
+    return sum(s[k] for k in ("new", "modified", "deleted", "conflict", "unknown_uid", "anomalies"))
+
+
 def export_to_xlsx(conn: sqlite3.Connection, target: Optional[Path] = None, *,
                    template: Optional[Path] = None, backup: bool = True,
-                   backup_dir: Optional[Path] = None, write_json: bool = True) -> dict:
+                   backup_dir: Optional[Path] = None, write_json: bool = True,
+                   force: bool = False) -> dict:
+    """DB -> workbook. The data sheets are rewritten from the DB, so unless
+    ``force`` is set this first diffs the existing target and raises
+    PendingSheetChangesError when it holds edits that were never imported
+    (they would otherwise be silently wiped; a backup is still taken)."""
     target = Path(target) if target else config.WORKBOOK_PATH
     load_from = Path(template) if template else (target if target.exists() else None)
+    if not force and template is None and target.exists():
+        diff = diff_from_xlsx(conn, target)
+        if pending_sheet_changes(diff):
+            raise PendingSheetChangesError(diff.summary())
 
     if load_from and load_from.exists():
         wb = openpyxl.load_workbook(str(load_from))  # keep formulas/other sheets
@@ -327,6 +359,8 @@ class SyncDiff:
     anomalies: list = field(default_factory=list)
     db_only: list = field(default_factory=list)   # in DB, never synced to xlsx yet
     unchanged: int = 0
+    # Rows already in the DB whose uid is missing from the sheet (written back on apply).
+    uid_backfill: list = field(default_factory=list)
 
     def summary(self) -> dict:
         return {
@@ -360,7 +394,7 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
     for direction in DATA_SHEETS:
         for t in _fetch_txns(conn, direction):
             cur_hash = _db_hash(direction, t["txn_date"], t["eff_amount_minor"], t["code"],
-                                t["content"], t["cat_name"], t["note"])
+                                t["content"], t["cat_name"])
             db_by_uid[t["external_uid"]] = {
                 "id": t["id"], "direction": direction, "current_hash": cur_hash,
                 "is_share": bool(t["eff_is_share"]), "code": t["code"],
@@ -379,8 +413,23 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
             for r in range(2, ws.max_row + 1):
                 cells = [ws.cell(row=r, column=c).value for c in range(1, 6)]
                 uid = ws.cell(row=r, column=UID_COL).value
+                uid = str(uid).strip() if uid not in (None, "") else None
                 if all(c in (None, "") for c in cells) and not uid:
                     continue
+
+                # A uid seen earlier in the sheet means this row was copy-pasted
+                # together with the hidden uid column: treat the copy as a new
+                # row instead of letting it overwrite the original txn.
+                if uid and uid in seen:
+                    uid = None
+                if uid:
+                    # Mark it seen before any anomaly check, so a row with a bad
+                    # edit is reported as an anomaly, never also as a deletion.
+                    seen.add(uid)
+
+                def anomaly(*reasons):
+                    diff.anomalies.append({"sheet": sheet_name, "row": r,
+                                           "reasons": list(reasons), "uid": uid})
 
                 iso = _iso(cells[0])
                 amount_dec = money.parse_decimal(cells[1])
@@ -393,29 +442,55 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
                 if ccy_row is None:
                     problems.append(f"unknown/missing currency: {cells[2]!r}")
                 if problems:
-                    diff.anomalies.append({"sheet": sheet_name, "row": r,
-                                           "reasons": problems, "uid": uid})
+                    anomaly(*problems)
+                    continue
+                try:
+                    amount_minor = money.to_minor(amount_dec, ccy_row["minor_unit"])
+                except ValueError as exc:
+                    anomaly(str(exc))
                     continue
 
                 content = "" if cells[3] is None else str(cells[3]).strip()
                 cat_name = None if cells[4] in (None, "") else str(cells[4]).strip()
-                amount_minor = money.to_minor(amount_dec, ccy_row["minor_unit"])
+                cat_id = cat_map.get((cat_name, direction)) if cat_name else None
+                if cat_name and cat_id is None:
+                    # Unknown name (or one of the other kind): applying would
+                    # silently drop it to 未分类 and the next export would erase it.
+                    anomaly(f"未知分类「{cat_name}」：请先在应用中添加该分类，或改成已有分类")
+                    continue
                 xlsx_hash = _db_hash(direction, iso, amount_minor, ccy_row["code"],
-                                     content, cat_name, "")
+                                     content, cat_name)
                 payload = {"sheet": sheet_name, "row": r, "uid": uid, "direction": direction,
                            "txn_date": iso, "amount_minor": amount_minor,
                            "currency_id": ccy_row["id"], "content": content,
-                           "category_id": cat_map.get((cat_name, direction)) if cat_name else None,
-                           "xlsx_hash": xlsx_hash}
+                           "category_id": cat_id, "xlsx_hash": xlsx_hash}
 
                 if not uid:
+                    # Imported earlier (e.g. by migrate or a previous apply) but
+                    # the uid never made it into the sheet: the deterministic uid
+                    # recognises it instead of inserting a duplicate.
+                    known = importer.make_external_uid(sheet_name, r, xlsx_hash)
+                    rec = db_by_uid.get(known)
+                    if rec is not None and known not in seen and rec["direction"] == direction:
+                        seen.add(known)
+                        diff.unchanged += 1
+                        diff.uid_backfill.append({"sheet": sheet_name, "row": r, "uid": known})
+                        continue
                     diff.new.append(payload)
                     continue
 
-                seen.add(uid)
                 rec = db_by_uid.get(uid)
                 if rec is None:
                     diff.unknown_uid.append({"sheet": sheet_name, "row": r, "uid": uid})
+                    continue
+
+                if rec["direction"] != direction:
+                    anomaly("该行被移到了另一张表（支出/入账）：请在应用中修改收支方向")
+                    continue
+
+                if xlsx_hash == rec["current_hash"]:
+                    # Sheet already matches the DB (whatever the baseline says).
+                    diff.unchanged += 1
                     continue
 
                 if rec["is_share"] and xlsx_hash != rec["baseline"]:
@@ -428,9 +503,7 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
                     # just "unchanged"; the next export rewrites it.)
                     if (amount_minor != rec["eff_amount_minor"]
                             or ccy_row["code"] != rec["code"]):
-                        diff.anomalies.append({
-                            "sheet": sheet_name, "row": r, "uid": uid,
-                            "reasons": ["已结清 AA 的金额/币种请在应用内修改（表格中显示的是我的部分）"]})
+                        anomaly("AA 交易的金额/币种请在应用内修改（表格中显示的是我的部分）")
                         continue
                     payload["amount_minor"] = rec["amount_minor"]
 
@@ -438,7 +511,7 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
                 db_changed = rec["current_hash"] != rec["baseline"]
                 if not xlsx_changed:
                     diff.unchanged += 1
-                elif db_changed and xlsx_hash != rec["current_hash"]:
+                elif db_changed:
                     diff.conflict.append({**payload, "txn_id": rec["id"],
                                           "db_content": rec["content"]})
                 else:
@@ -473,6 +546,24 @@ def _convert(conn, currency_id: int, txn_date: str, amount_minor: int, base_id: 
     return rl.rate_to_base, rl.rate_date, rl.stale_days, base_micro
 
 
+def _write_uids(path: Path, writes: list) -> None:
+    """Set the hidden uid cell of the given (sheet, row) pairs; atomic save."""
+    wb = openpyxl.load_workbook(str(path))
+    for sheet, row, uid in writes:
+        if sheet in wb.sheetnames:
+            wb[sheet].cell(row=row, column=UID_COL).value = uid
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        wb.save(str(tmp))
+        os.replace(str(tmp), str(path))
+    except PermissionError as exc:
+        _safe_unlink(tmp)
+        raise WorkbookLockedError(path) from exc
+    except Exception:
+        _safe_unlink(tmp)
+        raise
+
+
 def apply_diff(conn: sqlite3.Connection, source: Optional[Path], diff: SyncDiff, *,
                apply_deletions: bool = False, apply_conflicts: bool = False,
                write_json: bool = True) -> dict:
@@ -500,6 +591,9 @@ def apply_diff(conn: sqlite3.Connection, source: Optional[Path], diff: SyncDiff,
         applied["new"] += 1
 
     targets = list(diff.modified) + (list(diff.conflict) if apply_conflicts else [])
+    uid_writes = [(p["sheet"], p["row"], importer.make_external_uid(p["sheet"], p["row"], p["xlsx_hash"]))
+                  for p in diff.new]
+    uid_writes += [(b["sheet"], b["row"], b["uid"]) for b in diff.uid_backfill]
     for p in targets:
         rate_used, rate_date, stale, base_micro = upsert_values(p)
         conn.execute(
@@ -517,6 +611,16 @@ def apply_diff(conn: sqlite3.Connection, source: Optional[Path], diff: SyncDiff,
             conn.execute("DELETE FROM txn WHERE id = ?", (d["txn_id"],))
             applied["deleted"] += 1
 
+    # Imported rows get their uid written into the hidden column right away, so a
+    # second import before the next export recognises them instead of inserting
+    # duplicates (or failing on the uid UNIQUE constraint). Sheet first, then the
+    # DB commit: if the workbook can't be saved (open in Excel) nothing is applied.
+    if uid_writes:
+        try:
+            _write_uids(Path(source) if source else config.WORKBOOK_PATH, uid_writes)
+        except Exception:
+            conn.rollback()
+            raise
     conn.commit()
     if write_json:
         jsonsync.export_json(conn)

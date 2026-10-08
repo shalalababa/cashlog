@@ -33,6 +33,10 @@ def _parse_percent(raw) -> str:
         d = Decimal(str(raw))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"invalid percent: {raw!r}") from exc
+    # Infinity used to pass the DB CHECK (it CASTs to 0) and then crash every
+    # budget_status / dashboard call; NaN crashed the comparison itself.
+    if not d.is_finite():
+        raise ValueError(f"invalid percent: {raw!r}")
     if d < 0:
         raise ValueError("percent must be >= 0")
     return str(d)
@@ -202,7 +206,8 @@ def budget_status(conn: sqlite3.Connection, period_end: Optional[str] = None) ->
     data = list_budgets(conn)
     overall_row = data["overall"]
     overall_micro = overall_row["amount_micro"] if overall_row else None
-    actual_overall = stats.expense_total_micro(conn, s_iso, e_iso)  # excludes 学费/特殊
+    # Same headline as the stats page (excludes 学费/特殊; a manual override wins).
+    actual_overall = stats.fiscal_headline_micro(conn, e_iso)
 
     cats = []
     for cb in data["categories"]:

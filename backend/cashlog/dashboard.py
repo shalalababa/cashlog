@@ -35,7 +35,7 @@ def _month_summary(conn: sqlite3.Connection, period_end: date,
                    rate_lookup_date: Optional[date] = None) -> dict:
     start = stats.edate(period_end, -1)
     s_iso, e_iso = start.isoformat(), period_end.isoformat()
-    micro = stats.expense_total_micro(conn, s_iso, e_iso)
+    micro = stats.fiscal_headline_micro(conn, e_iso)   # honours a manual override
     total_cny = money.base_micro_to_cny(micro)
     lookup_iso = (rate_lookup_date or period_end).isoformat()
     rl = rates.lookup(conn, usd_id, lookup_iso, base_currency_id=base_id) if usd_id else None

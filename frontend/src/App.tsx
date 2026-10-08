@@ -39,10 +39,14 @@ export default function App() {
   const [editing, setEditing] = useState<Txn | null>(null);
   const [toast, setToast] = useState<{ msg: string; error?: boolean } | null>(null);
   const searchTimer = useRef<number>();
+  const toastTimer = useRef<number>();
+  const reloadSeq = useRef(0);
 
   const notify = (msg: string, error = false) => {
     setToast({ msg, error });
-    window.setTimeout(() => setToast(null), 2200);
+    // One timer: an earlier toast's timer must not hide a newer message early.
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2200);
   };
 
   const reloadRateStatus = useCallback(() => {
@@ -55,6 +59,7 @@ export default function App() {
   }, [reloadRateStatus]);
 
   const reload = useCallback(async () => {
+    const seq = ++reloadSeq.current;   // ignore responses overtaken by a newer request
     setLoading(true);
     try {
       const res = await api.txns({
@@ -71,11 +76,17 @@ export default function App() {
         limit: LIMIT,
         offset,
       });
+      if (seq !== reloadSeq.current) return;
+      // Deleting the last row of the last page leaves an empty page: step back.
+      if (!res.items.length && offset > 0 && res.total > 0) {
+        setOffset(Math.max(0, Math.floor((res.total - 1) / LIMIT) * LIMIT));
+        return;
+      }
       setPage(res);
     } catch (e) {
-      notify((e as Error).message, true);
+      if (seq === reloadSeq.current) notify((e as Error).message, true);
     } finally {
-      setLoading(false);
+      if (seq === reloadSeq.current) setLoading(false);
     }
   }, [filters, sort, order, offset]);
 
@@ -211,6 +222,11 @@ export default function App() {
           onRatesChanged={() => {
             reloadRateStatus();
             reload();
+          }}
+          onTxnsChanged={() => {
+            reload();
+            api.meta().then(setMeta);
+            reloadRateStatus();
           }}
         />
       )}

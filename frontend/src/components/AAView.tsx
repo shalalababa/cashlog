@@ -149,6 +149,7 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
   // Set once this receipt produced a txn; the saved receipt is then frozen, so a
   // further 计算 starts a new one instead of editing the generated history.
   const [generated, setGenerated] = useState(false);
+  const [generating, setGenerating] = useState(false);   // in-flight guard (no double-submit)
   const [newName, setNewName] = useState("");
   const active = persons.filter((p) => p.active);
 
@@ -164,27 +165,38 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
     try { await api.createPerson(newName.trim()); setNewName(""); onPersonsChanged(); } catch { /* dup */ }
   }
 
+  // Save what is on screen now (payer / total / items) and return the session.
+  async function save() {
+    const payload = {
+      id: sessionId, name: "小票", currency, payer_id: payerId, total_with_tax: total || "0",
+      items: items.filter((it) => it.pretax).map((it) => ({ label: it.label, pretax: it.pretax, person_ids: it.members })),
+    };
+    const s = await api.saveSession(payload);
+    setSessionId(s.id);
+    setResult(s.result);
+    setGenerated(false);
+    return s;
+  }
   async function calc() {
     try {
-      const payload = {
-        id: sessionId, name: "小票", currency, payer_id: payerId, total_with_tax: total || "0",
-        items: items.filter((it) => it.pretax).map((it) => ({ label: it.label, pretax: it.pretax, person_ids: it.members })),
-      };
-      const s = await api.saveSession(payload);
-      setSessionId(s.id);
-      setResult(s.result);
-      setGenerated(false);
+      await save();
     } catch (e) {
       notify((e as Error).message, true);
     }
   }
   async function generate() {
-    if (!sessionId) { notify("请先计算", true); return; }
+    if (generating) return;
     if (payerId == null) { notify("请先选择付款人", true); return; }
-    const expenseCats = categories.filter((c) => c.kind === "expense");
+    // Default category: the first active expense category that counts in stats
+    // (never a disabled one, nor 学费/特殊 which would hide it from stats).
+    const cat = categories.find((c) => c.kind === "expense" && c.active && !c.exclude_stats);
+    setGenerating(true);
     try {
-      await api.generateTxn(sessionId, {
-        date: new Date().toLocaleDateString("sv"), content: "小票 AA", category_id: expenseCats[0]?.id ?? null,
+      // Re-save first so the txn reflects the payer/items currently on screen,
+      // not whatever was stored at the last 计算.
+      const s = await save();
+      await api.generateTxn(s.id, {
+        date: new Date().toLocaleDateString("sv"), content: "小票 AA", category_id: cat?.id ?? null,
       });
       notify("已生成 AA 交易，小项明细可在「小票细项」查看");
       setSessionId(null);
@@ -192,6 +204,8 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
       onTxnsChanged();
     } catch (e) {
       notify((e as Error).message, true);
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -244,7 +258,7 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
 
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         <button className="btn primary" onClick={calc}>计算</button>
-        <button className="btn" onClick={generate} disabled={!result || payerId == null || generated}
+        <button className="btn" onClick={generate} disabled={!result || payerId == null || generated || generating}
                 title={generated ? "已生成；修改后重新计算可生成新的一笔" : payerId == null ? "请先选择付款人" : undefined}>
           {generated ? "已生成" : "生成 AA 交易"}
         </button>
