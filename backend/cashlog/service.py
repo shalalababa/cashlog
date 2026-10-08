@@ -38,9 +38,14 @@ def _looks_like_aa(content: str) -> bool:
 # Serialization (DB row -> API dict, minor -> major)
 # ---------------------------------------------------------------------------
 def serialize_txn(row: sqlite3.Row) -> dict:
+    """``amount`` / ``base_cny`` are always the full stored amount (what the edit
+    form round-trips). For a structured AA expense — settled or not —
+    ``my_amount`` / ``my_base_cny`` carry my own share (txn_eff view), which is
+    what the ledger displays and stats count; they are None for every other txn."""
     minor_unit = row["minor_unit"]
     base_cny = (money.base_micro_to_cny(row["base_amount_micro"])
                 if row["base_amount_micro"] is not None else None)
+    my_minor, my_base = row["my_minor"], row["my_base_micro"]
     return {
         "id": row["id"],
         "external_uid": row["external_uid"],
@@ -59,6 +64,9 @@ def serialize_txn(row: sqlite3.Row) -> dict:
         "payer_id": row["payer_id"],
         "aa_settled": bool(row["aa_settled"]),
         "base_cny": str(base_cny) if base_cny is not None else None,
+        "my_amount": (str(money.from_minor(my_minor, minor_unit))
+                      if my_minor is not None else None),
+        "my_base_cny": str(money.base_micro_to_cny(my_base)) if my_base is not None else None,
         "rate_used": row["rate_used"],
         "rate_date_used": row["rate_date_used"],
         "rate_stale_days": row["rate_stale_days"],
@@ -71,14 +79,16 @@ def serialize_txn(row: sqlite3.Row) -> dict:
 _TXN_SELECT = """
     SELECT t.*, cur.code AS code, cur.name AS ccy_name, cur.minor_unit,
            c.name AS cat_name, c.color AS cat_color
-    FROM   txn t
+    FROM   txn_eff t
     JOIN   currency cur ON cur.id = t.currency_id
     LEFT   JOIN category c ON c.id = t.category_id
 """
 
 _SORT_COLUMNS = {
-    "date": "t.txn_date", "amount": "t.amount_minor", "content": "t.content",
-    "category": "c.name", "currency": "cur.code", "base_cny": "t.base_amount_micro",
+    # amount / base_cny sort by what the ledger displays (my share for AA).
+    "date": "t.txn_date", "amount": "COALESCE(t.my_minor, t.amount_minor)", "content": "t.content",
+    "category": "c.name", "currency": "cur.code",
+    "base_cny": "COALESCE(t.my_base_micro, t.base_amount_micro)",
 }
 
 
@@ -235,8 +245,26 @@ def autocomplete(conn: sqlite3.Connection, direction: str, prefix: str,
            ORDER BY freq DESC, last_used DESC
            LIMIT ?""",
         (direction, pattern, limit)).fetchall()
-    return [{"content": r["content"], "freq": r["freq"], "last_used": r["last_used"]}
+    return [{"content": r["content"], "freq": r["freq"], "last_used": r["last_used"],
+             "category_id": _suggested_category(conn, direction, r["content"])}
             for r in rows]
+
+
+def _suggested_category(conn: sqlite3.Connection, direction: str,
+                        content: str) -> Optional[int]:
+    """The category this content was most often filed under (ties -> most
+    recent). Only active categories of the matching kind count, so picking a
+    suggestion never selects something the form's dropdown can't show."""
+    row = conn.execute(
+        """SELECT t.category_id
+           FROM   txn t JOIN category c ON c.id = t.category_id
+           WHERE  t.direction = ? AND t.content = ?
+             AND  c.active = 1 AND c.kind = t.direction
+           GROUP BY t.category_id
+           ORDER BY COUNT(*) DESC, MAX(t.txn_date) DESC, MAX(t.id) DESC
+           LIMIT 1""",
+        (direction, content)).fetchone()
+    return row["category_id"] if row else None
 
 
 def rate_for(conn: sqlite3.Connection, currency: str, on_date: str) -> dict:

@@ -61,8 +61,8 @@ def _cumulative_series(conn: sqlite3.Connection, start: date, end: date) -> list
         return []
     rows = conn.execute(
         """SELECT t.txn_date AS d,
-                  COALESCE(SUM(COALESCE(t.base_amount_micro, 0)), 0) AS micro
-           FROM   txn t
+                  COALESCE(SUM(COALESCE(t.eff_base_micro, 0)), 0) AS micro
+           FROM   txn_eff t
            LEFT   JOIN category c ON c.id = t.category_id
            WHERE  t.direction = 'expense'
              AND  t.txn_date >= ? AND t.txn_date <= ?

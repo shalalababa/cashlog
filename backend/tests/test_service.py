@@ -76,6 +76,31 @@ def test_autocomplete_prefix_and_uniqueness():
     assert [c["content"] for c in narrow] == ["ChatGPT订阅 月付"]
 
 
+def test_autocomplete_suggests_most_used_active_category():
+    conn = _env()
+    food, other = _ecat(conn), _ecat(conn, "生活用品")
+
+    def add(content, cat, day="2024-03-05"):
+        service.create_txn(conn, {"date": day, "direction": "expense", "amount": "1",
+                                  "currency": "CNY", "content": content, "category_id": cat})
+
+    # Majority wins over recency.
+    add("苹果iCloud 50GB 月付", other, "2024-01-05")
+    add("苹果iCloud 50GB 月付", other, "2024-02-05")
+    add("苹果iCloud 50GB 月付", food, "2024-03-05")
+    # Never categorised -> no suggestion.
+    add("苹果 散装", None)
+
+    by = {s["content"]: s["category_id"] for s in service.autocomplete(conn, "expense", "苹果")}
+    assert by["苹果iCloud 50GB 月付"] == other
+    assert by["苹果 散装"] is None
+
+    # A disabled category is never suggested; fall back to the next active one.
+    conn.execute("UPDATE category SET active = 0 WHERE id = ?", (other,))
+    by = {s["content"]: s["category_id"] for s in service.autocomplete(conn, "expense", "苹果")}
+    assert by["苹果iCloud 50GB 月付"] == food
+
+
 def test_invalid_date_is_rejected():
     conn = _env()
     for bad in ("bad-date", "2024-13-01", "2024-02-30", ""):

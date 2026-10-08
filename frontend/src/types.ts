@@ -16,6 +16,9 @@ export interface Txn {
   payer_id: number | null;
   aa_settled: boolean;
   base_cny: string | null;
+  /** Structured AA (settled or not): my own share, shown in the ledger. `amount`/`base_cny` stay the full total. */
+  my_amount: string | null;
+  my_base_cny: string | null;
   rate_used: string | null;
   rate_date_used: string | null;
   rate_stale_days: number;
@@ -72,6 +75,8 @@ export interface Suggestion {
   content: string;
   freq: number;
   last_used: string;
+  /** Category this content was most often filed under (active only), if any. */
+  category_id: number | null;
 }
 
 export interface TxnInput {
@@ -154,6 +159,9 @@ export interface SessionItem {
   label: string | null;
   pretax: string;
   shares: { person_id: number; name?: string | null; weight?: string | null }[];
+  /** Read-only breakdown (tax spread pro rata over pretax). */
+  with_tax?: string;
+  per_person?: { person_id: number; name: string | null; pretax: string; with_tax: string }[];
 }
 
 export interface Session {
@@ -167,7 +175,20 @@ export interface Session {
   tax_amount: string;
   pretax_total: string;
   items: SessionItem[];
-  result: { person_id: number; name: string | null; amount: string }[];
+  result: { person_id: number; name: string | null; amount: string; pretax?: string }[];
+  /** AA txn this receipt generated (the receipt is then frozen). */
+  txn_id?: number | null;
+}
+
+export interface ReceiptTxn {
+  session_id: number;
+  txn_id: number;
+  date: string;
+  content: string;
+  amount: string;
+  currency: string;
+  aa_settled: boolean;
+  item_count: number;
 }
 
 export interface FiscalMonth {

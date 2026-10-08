@@ -46,6 +46,8 @@ def _bootstrap_db() -> None:
         ).fetchone()
         if has_core:
             db.ensure_schema(conn)
+            # Link receipt sessions to txns generated before aa_session_txn existed.
+            aa_service.link_existing_sessions(conn)
             return
     finally:
         conn.close()
@@ -380,6 +382,11 @@ def _session_payload(body: SessionIn) -> dict:
                    "shares": [s.model_dump() for s in it.shares] if it.shares else None}
                   for it in body.items],
     }
+
+
+@app.get("/api/aa/receipts")
+def aa_receipts(conn=Depends(get_conn)):
+    return aa_service.list_receipt_txns(conn)
 
 
 @app.get("/api/aa/sessions")

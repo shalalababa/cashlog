@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Candidate, Category, Currency, Person, SessionItem, SettlementGroup, UnsettledGroup } from "../types";
+import type { Candidate, Category, Currency, Person, ReceiptTxn, Session, SessionItem, SettlementGroup, UnsettledGroup } from "../types";
 
 interface Props {
   currencies: Currency[];
   categories: Category[];
   notify: (msg: string, error?: boolean) => void;
+  /** Called after an action creates or changes transactions, so the ledger can refetch. */
+  onTxnsChanged: () => void;
 }
 
-export default function AAView({ currencies, categories, notify }: Props) {
-  const [tab, setTab] = useState<"settle" | "calc" | "cands">("settle");
+export default function AAView({ currencies, categories, notify, onTxnsChanged }: Props) {
+  const [tab, setTab] = useState<"settle" | "calc" | "receipts" | "cands">("settle");
   const [persons, setPersons] = useState<Person[]>([]);
   const loadPersons = () => api.persons().then(setPersons).catch(() => setPersons([]));
   useEffect(() => {
@@ -21,17 +23,19 @@ export default function AAView({ currencies, categories, notify }: Props) {
       <div className="tabs" style={{ marginBottom: 16 }}>
         <button className={`tab ${tab === "settle" ? "active" : ""}`} onClick={() => setTab("settle")}>未结清 / 转账</button>
         <button className={`tab ${tab === "calc" ? "active" : ""}`} onClick={() => setTab("calc")}>小票计算器</button>
+        <button className={`tab ${tab === "receipts" ? "active" : ""}`} onClick={() => setTab("receipts")}>小票细项</button>
         <button className={`tab ${tab === "cands" ? "active" : ""}`} onClick={() => setTab("cands")}>历史候选</button>
       </div>
-      {tab === "settle" && <SettlementPanel notify={notify} />}
-      {tab === "calc" && <CalculatorPanel persons={persons} currencies={currencies} categories={categories} onPersonsChanged={loadPersons} notify={notify} />}
-      {tab === "cands" && <CandidatesPanel persons={persons} notify={notify} />}
+      {tab === "settle" && <SettlementPanel notify={notify} onTxnsChanged={onTxnsChanged} />}
+      {tab === "calc" && <CalculatorPanel persons={persons} currencies={currencies} categories={categories} onPersonsChanged={loadPersons} notify={notify} onTxnsChanged={onTxnsChanged} />}
+      {tab === "receipts" && <ReceiptsPanel notify={notify} />}
+      {tab === "cands" && <CandidatesPanel persons={persons} notify={notify} onTxnsChanged={onTxnsChanged} />}
     </div>
   );
 }
 
 /* ---------------- Settlement ---------------- */
-function SettlementPanel({ notify }: { notify: (m: string, e?: boolean) => void }) {
+function SettlementPanel({ notify, onTxnsChanged }: { notify: (m: string, e?: boolean) => void; onTxnsChanged: () => void }) {
   const [groups, setGroups] = useState<UnsettledGroup[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [result, setResult] = useState<SettlementGroup[] | null>(null);
@@ -65,6 +69,7 @@ function SettlementPanel({ notify }: { notify: (m: string, e?: boolean) => void 
       notify("已标记结清");
       setSelected(new Set());
       load();
+      onTxnsChanged();
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -131,9 +136,9 @@ function SettlementPanel({ notify }: { notify: (m: string, e?: boolean) => void 
 /* ---------------- Receipt calculator ---------------- */
 interface DraftItem { label: string; pretax: string; members: number[]; }
 
-function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, notify }: {
+function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, notify, onTxnsChanged }: {
   persons: Person[]; currencies: Currency[]; categories: Category[]; onPersonsChanged: () => void;
-  notify: (m: string, e?: boolean) => void;
+  notify: (m: string, e?: boolean) => void; onTxnsChanged: () => void;
 }) {
   const [currency, setCurrency] = useState("USD");
   const [payerId, setPayerId] = useState<number | null>(null);
@@ -141,6 +146,9 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
   const [items, setItems] = useState<DraftItem[]>([{ label: "", pretax: "", members: [] }]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [result, setResult] = useState<{ person_id: number; name: string | null; amount: string }[] | null>(null);
+  // Set once this receipt produced a txn; the saved receipt is then frozen, so a
+  // further 计算 starts a new one instead of editing the generated history.
+  const [generated, setGenerated] = useState(false);
   const [newName, setNewName] = useState("");
   const active = persons.filter((p) => p.active);
 
@@ -165,6 +173,7 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
       const s = await api.saveSession(payload);
       setSessionId(s.id);
       setResult(s.result);
+      setGenerated(false);
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -177,7 +186,10 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
       await api.generateTxn(sessionId, {
         date: new Date().toLocaleDateString("sv"), content: "小票 AA", category_id: expenseCats[0]?.id ?? null,
       });
-      notify("已生成 AA 交易");
+      notify("已生成 AA 交易，小项明细可在「小票细项」查看");
+      setSessionId(null);
+      setGenerated(true);
+      onTxnsChanged();
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -232,8 +244,10 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
 
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         <button className="btn primary" onClick={calc}>计算</button>
-        <button className="btn" onClick={generate} disabled={!result || payerId == null}
-                title={payerId == null ? "请先选择付款人" : undefined}>生成 AA 交易</button>
+        <button className="btn" onClick={generate} disabled={!result || payerId == null || generated}
+                title={generated ? "已生成；修改后重新计算可生成新的一笔" : payerId == null ? "请先选择付款人" : undefined}>
+          {generated ? "已生成" : "生成 AA 交易"}
+        </button>
         {result && payerId == null && <span className="muted" style={{ alignSelf: "center" }}>选择付款人后可生成交易</span>}
       </div>
 
@@ -248,8 +262,109 @@ function CalculatorPanel({ persons, currencies, categories, onPersonsChanged, no
   );
 }
 
+/* ---------------- Receipt history (小票细项) ---------------- */
+function ReceiptsPanel({ notify }: { notify: (m: string, e?: boolean) => void }) {
+  const [list, setList] = useState<ReceiptTxn[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [selId, setSelId] = useState<number | null>(null);   // session id
+  const [detail, setDetail] = useState<Session | null>(null);
+
+  useEffect(() => {
+    api.receipts()
+      .then((r) => { setList(r); setLoaded(true); if (r.length) setSelId(r[0].session_id); })
+      .catch((e) => { notify(e.message, true); setLoaded(true); });
+  }, []);
+  useEffect(() => {
+    if (selId == null) { setDetail(null); return; }
+    let live = true;
+    api.getSession(selId).then((s) => live && setDetail(s)).catch((e) => notify(e.message, true));
+    return () => { live = false; };
+  }, [selId]);
+
+  if (loaded && !list.length) {
+    return (
+      <div className="card empty" style={{ padding: 24 }}>
+        还没有由小票计算器生成的 AA 交易。在「小票计算器」里计算并生成交易后，小项与分摊明细会保存在这里。
+      </div>
+    );
+  }
+  const sel = list.find((r) => r.session_id === selId);
+  return (
+    <div className="receipts">
+      <div className="card receipts-list">
+        {list.map((r) => (
+          <button key={r.session_id} className={"receipt-row" + (r.session_id === selId ? " active" : "")}
+                  onClick={() => setSelId(r.session_id)}>
+            <span className="muted">{r.date}</span>
+            <span className="receipt-name">{r.content || "（无内容）"}</span>
+            <span className="receipt-meta">
+              <b>{r.amount} {r.currency}</b>
+              <span className="muted"> · {r.item_count} 项</span>
+              {r.aa_settled && <span className="badge aa" style={{ marginLeft: 6 }}>AA✓</span>}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <div className="card" style={{ padding: 18 }}>
+        {!detail || !sel ? <div className="muted">加载中…</div> : (
+          <>
+            <div className="section-title">{sel.content || "小票"} <span className="muted">· {sel.date}</span></div>
+            <div className="receipt-sum">
+              <span>含税总价 <b>{detail.total_with_tax} {detail.currency}</b></span>
+              <span>税前合计 <b>{detail.pretax_total}</b></span>
+              <span>税费 <b>{detail.tax_amount}</b></span>
+              <span>付款人 <b>{detail.payer ?? "—"}</b></span>
+            </div>
+
+            <table className="calc-items receipt-items">
+              <thead><tr><th>小项</th><th className="num">税前</th><th className="num">含税</th><th>分摊（含税）</th></tr></thead>
+              <tbody>
+                {detail.items.map((it, i) => (
+                  <tr key={it.id ?? i}>
+                    <td>{it.label?.trim() ? it.label : <span className="muted">小项 {i + 1}</span>}</td>
+                    <td className="num">{it.pretax}</td>
+                    <td className="num">{it.with_tax ?? "—"}</td>
+                    <td>
+                      {(it.per_person ?? []).length ? (
+                        <div className="chips-pick">
+                          {it.per_person!.map((p) => (
+                            <span key={p.person_id} className="pick on" title={`税前 ${p.pretax}`}>
+                              {p.name ?? `#${p.person_id}`} {p.with_tax}
+                            </span>
+                          ))}
+                        </div>
+                      ) : <span className="muted">未分摊</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <div className="section-title" style={{ marginTop: 16 }}>每人合计</div>
+            <div className="calc-result">
+              {detail.result.map((r) => (
+                <div key={r.person_id} className="res-cell">
+                  <span>{r.name}</span>
+                  <b>{r.amount} {detail.currency}</b>
+                  {r.pretax && <span className="muted" style={{ fontSize: 11 }}>税前 {r.pretax}</span>}
+                </div>
+              ))}
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+              每人合计是生成交易时的应付金额（精确到分）；单项含税金额按税前比例分摊税费，仅供参考，可能有 ±0.01 的取整差。
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Candidates ---------------- */
-function CandidatesPanel({ persons, notify }: { persons: Person[]; notify: (m: string, e?: boolean) => void }) {
+function CandidatesPanel({ persons, notify, onTxnsChanged }: {
+  persons: Person[]; notify: (m: string, e?: boolean) => void; onTxnsChanged: () => void;
+}) {
   const [cands, setCands] = useState<Candidate[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [payerId, setPayerId] = useState<number | null>(null);
@@ -279,6 +394,7 @@ function CandidatesPanel({ persons, notify }: { persons: Person[]; notify: (m: s
       notify(`已结构化 ${structured} 笔（平均分摊）`);
       setSelected(new Set());
       load();
+      onTxnsChanged();
     } catch (e) {
       notify((e as Error).message, true);
     }

@@ -6,6 +6,8 @@ interface Props {
   value: string;
   direction: "expense" | "income";
   onChange: (v: string) => void;
+  /** Fired when the user accepts a suggestion (dropdown, Enter, or ghost Tab/→). */
+  onPick?: (s: Suggestion) => void;
   autoFocus?: boolean;
 }
 
@@ -15,7 +17,7 @@ interface Props {
  * - when exactly one suggestion remains, its tail is shown inline as ghost text;
  *   Tab / → / Enter completes it
  */
-export default function ContentAutocomplete({ value, direction, onChange, autoFocus }: Props) {
+export default function ContentAutocomplete({ value, direction, onChange, onPick, autoFocus }: Props) {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -50,8 +52,9 @@ export default function ContentAutocomplete({ value, direction, onChange, autoFo
       ? suggestions[0].content.slice(value.length)
       : "";
 
-  function complete(text: string) {
-    onChange(text);
+  function complete(s: Suggestion) {
+    onChange(s.content);
+    onPick?.(s);
     setSuggestions([]);
     setOpen(false);
   }
@@ -59,7 +62,7 @@ export default function ContentAutocomplete({ value, direction, onChange, autoFo
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (ghost && (e.key === "Tab" || e.key === "ArrowRight")) {
       if (e.key === "Tab") e.preventDefault();
-      complete(suggestions[0].content);
+      complete(suggestions[0]);
       return;
     }
     if (!open) return;
@@ -72,7 +75,7 @@ export default function ContentAutocomplete({ value, direction, onChange, autoFo
     } else if (e.key === "Enter") {
       if (suggestions[active]) {
         e.preventDefault();
-        complete(suggestions[active].content);
+        complete(suggestions[active]);
       }
     } else if (e.key === "Escape") {
       setOpen(false);
@@ -104,7 +107,7 @@ export default function ContentAutocomplete({ value, direction, onChange, autoFo
               className={"ac-item" + (i === active ? " active" : "")}
               onMouseDown={(e) => {
                 e.preventDefault();
-                complete(s.content);
+                complete(s);
               }}
             >
               <span>{s.content}</span>

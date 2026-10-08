@@ -81,7 +81,10 @@ export default function TxnTable(props: Props) {
           return (
             <div className={`num amount ${t.direction}`}>
               {t.direction === "expense" ? "-" : "+"}
-              {t.amount} {t.currency}
+              {t.my_amount ?? t.amount} {t.currency}
+              {t.my_amount != null && (
+                <div className="amount-total" title="AA：显示并统计我的部分">总价 {t.amount}</div>
+              )}
             </div>
           );
         },
@@ -93,7 +96,7 @@ export default function TxnTable(props: Props) {
           const t = c.row.original;
           return (
             <div className="num">
-              {t.base_cny ? `¥${t.base_cny}` : <span className="muted">—</span>}
+              {(t.my_base_cny ?? t.base_cny) ? `¥${t.my_base_cny ?? t.base_cny}` : <span className="muted">—</span>}
               {t.rate_stale && <span className="badge stale" style={{ marginLeft: 6 }}>旧汇率</span>}
             </div>
           );

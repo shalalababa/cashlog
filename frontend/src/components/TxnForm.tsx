@@ -210,6 +210,12 @@ export default function TxnForm({ currencies, categories, editing, onClose, onSa
               value={form.content}
               direction={form.direction}
               onChange={(v) => set({ content: v })}
+              onPick={(s) => {
+                // Carry over the category this content was usually filed under.
+                if (s.category_id != null && cats.some((c) => c.id === s.category_id)) {
+                  set({ category_id: s.category_id });
+                }
+              }}
               autoFocus
             />
           </div>

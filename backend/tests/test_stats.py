@@ -73,9 +73,11 @@ def test_fiscal_month_total_excludes_flagged_and_respects_boundaries():
     _expense(conn, "2024-01-31", "70")                       # before window   -> excluded
     _fiscal_month(conn, "2024-03-05", "10")                  # 10 USD credit card
 
-    rows = stats.fiscal_months(conn)
-    assert len(rows) == 1
-    fm = rows[0]
+    rows = stats.fiscal_months(conn, today=date(2024, 3, 1))
+    # 2024-01-31 opens the 2024-02-05 month; the 2024-03-05 txn (on the 5th)
+    # belongs to the 2024-04-05 month, so that one is listed too.
+    assert [r["period_end"] for r in rows] == ["2024-02-05", "2024-03-05", "2024-04-05"]
+    fm = rows[1]
     assert fm["range_start"] == "2024-02-05" and fm["range_end"] == "2024-03-04"
     assert fm["total_cny"] == 130.0                          # 100 + 30
     assert fm["total_usd"] == round(130 / 7, 2)              # 美元换算 = B/H
@@ -90,7 +92,7 @@ def test_fiscal_ratio_can_exceed_one():
     _rate(conn, "USD", "2024-03-01", "7")
     _expense(conn, "2024-02-10", "100")                      # 100 CNY total
     _fiscal_month(conn, "2024-03-05", "100")                 # 100 USD -> 700 CNY credit card
-    fm = stats.fiscal_months(conn)[0]
+    fm = stats.fiscal_month(conn, "2024-03-05")
     assert fm["ratio"] == pytest.approx(7.0)                 # 700 / 100 = 700%
 
 
@@ -206,3 +208,26 @@ def _run():
 
 if __name__ == "__main__":
     _run()
+
+
+def test_fiscal_months_auto_fill_up_to_current_month():
+    """New months appear without a stored fiscal_month row; gaps are filled."""
+    conn = _env()
+    _expense(conn, "2024-01-10", "10")                       # -> 2024-02-05 close
+    _fiscal_month(conn, "2024-02-05", "1")
+    _expense(conn, "2024-04-20", "40")                       # -> 2024-05-05 close
+    rows = stats.fiscal_months(conn, today=date(2024, 6, 5))  # on the 5th -> 2024-07-05
+    assert [r["period_end"] for r in rows] == [
+        "2024-02-05", "2024-03-05", "2024-04-05", "2024-05-05", "2024-06-05", "2024-07-05"]
+    may = rows[3]
+    assert may["total_cny"] == 40.0 and may["credit_card"] == 0.0
+    assert may["credit_card_currency"] == "USD"
+    assert rows[0]["credit_card"] == 1.0                     # stored row still used
+    # A filled-in month is editable: saving it creates the row.
+    stats.save_fiscal_month(conn, "2024-06-05", credit_card="5", write_json=False)
+    assert conn.execute("SELECT COUNT(*) FROM fiscal_month").fetchone()[0] == 2
+
+
+def test_fiscal_months_empty_db():
+    conn = _env()
+    assert stats.fiscal_months(conn, today=date(2024, 6, 1)) == []

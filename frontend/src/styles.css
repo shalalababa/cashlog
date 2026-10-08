@@ -94,6 +94,7 @@ table.txns th.sortable:hover { color: var(--accent); }
 table.txns td { padding: 11px 12px; border-bottom: 1px solid var(--surface-2); }
 table.txns tbody tr:hover { background: var(--surface-2); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
+.amount-total { font-size: 11px; font-weight: 400; color: var(--text-dim); }
 .amount { font-weight: 600; font-variant-numeric: tabular-nums; }
 .amount.expense { color: var(--expense); }
 .amount.income { color: var(--income); }
@@ -358,3 +359,18 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   .scroll-top-btn { right: 16px; bottom: 16px; width: 42px; height: 42px; }
   .pager { flex-wrap: wrap; gap: 8px; }
 }
+
+/* AA -> 小票细项 */
+.receipts { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 16px; align-items: start; }
+.receipts-list { padding: 6px; max-height: 70vh; overflow: auto; }
+.receipt-row { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  padding: 10px 12px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; color: var(--text); font: inherit; }
+.receipt-row:hover { background: var(--surface-2); }
+.receipt-row.active { background: var(--accent-soft); }
+.receipt-row .muted { font-size: 12px; }
+.receipt-name { font-weight: 600; }
+.receipt-sum { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 4px 0 14px; color: var(--text-dim); }
+.receipt-sum b { color: var(--text); }
+.receipt-items td.num, .receipt-items th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.receipt-items .pick { cursor: default; }
+@media (max-width: 760px) { .receipts { grid-template-columns: 1fr; } }

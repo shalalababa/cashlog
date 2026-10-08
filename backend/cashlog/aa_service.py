@@ -4,7 +4,7 @@ Money crosses this boundary in major units."""
 from __future__ import annotations
 
 import sqlite3
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import List, Optional
 
 from . import aa, jsonsync, money, service
@@ -369,6 +369,29 @@ def get_session(conn: sqlite3.Connection, session_id: int) -> dict:
 
     result = aa.compute_session(s["total_with_tax_minor"], calc_items)
     pretax_sum = sum(it["pretax_minor"] for it in calc_items)
+
+    # Per-item breakdown (display only; the exact per-person totals are `result`).
+    # Each item's pretax is split among its sharers by weight; its tax-included
+    # value scales by total / pretax_sum, i.e. tax is spread pro rata.
+    q = Decimal(1).scaleb(-mu)
+    scale = (Decimal(s["total_with_tax_minor"]) / Decimal(pretax_sum)) if pretax_sum else Decimal(0)
+    pretax_by_person: dict = {}
+    for item, raw in zip(items, calc_items):
+        shares = raw["shares"]
+        wsum = sum(Decimal(str(sh.get("weight") or 1)) for sh in shares)
+        item["with_tax"] = str(money.from_minor(int((Decimal(raw["pretax_minor"]) * scale)
+                                                   .quantize(Decimal(1), ROUND_HALF_UP)), mu))
+        per = []
+        for sh in shares:
+            part = Decimal(raw["pretax_minor"]) * Decimal(str(sh.get("weight") or 1)) / wsum
+            pretax_by_person[sh["person_id"]] = pretax_by_person.get(sh["person_id"], Decimal(0)) + part
+            per.append({"person_id": sh["person_id"], "name": sh["name"],
+                        "pretax": str((part / (Decimal(10) ** mu)).quantize(q, ROUND_HALF_UP)),
+                        "with_tax": str((part * scale / (Decimal(10) ** mu)).quantize(q, ROUND_HALF_UP))})
+        item["per_person"] = per
+
+    link = conn.execute("SELECT txn_id FROM aa_session_txn WHERE session_id = ?",
+                        (session_id,)).fetchone()
     return {
         "id": s["id"], "name": s["name"], "currency": s["currency"], "minor_unit": mu,
         "payer_id": s["payer_id"], "payer": names.get(s["payer_id"]),
@@ -377,7 +400,10 @@ def get_session(conn: sqlite3.Connection, session_id: int) -> dict:
         "pretax_total": str(money.from_minor(pretax_sum, mu)),
         "items": items,
         "result": [{"person_id": pid, "name": names.get(pid),
+                    "pretax": str((pretax_by_person.get(pid, Decimal(0)) / (Decimal(10) ** mu))
+                                  .quantize(q, ROUND_HALF_UP)),
                     "amount": str(money.from_minor(amt, mu))} for pid, amt in result.items()],
+        "txn_id": link["txn_id"] if link else None,
     }
 
 
@@ -394,6 +420,8 @@ def save_session(conn: sqlite3.Connection, data: dict, *, write_json: bool = Tru
     tax_minor = max(total_minor - sum(money.to_minor(it["pretax"], mu) for it in items), 0)
 
     sid = data.get("id")
+    if sid and _session_txn(conn, sid) is not None:
+        raise ValueError("该小票已生成 AA 交易，不能再修改（请新建一张小票）")
     if sid:
         conn.execute(
             "UPDATE aa_session SET name=?, total_with_tax_minor=?, tax_amount_minor=?, "
@@ -436,6 +464,8 @@ def generate_txn_from_session(conn: sqlite3.Connection, session_id: int, *,
     """Create an AA expense txn from a calculator session: amount = total, payer =
     session payer, each person's owed = their computed tax-included share."""
     s = get_session(conn, session_id)
+    if s["txn_id"] is not None:
+        raise ValueError("该小票已生成过 AA 交易")
     if not s["result"]:
         raise ValueError("session has no participants/items to generate from")
     txn = service.create_txn(conn, {
@@ -444,6 +474,71 @@ def generate_txn_from_session(conn: sqlite3.Connection, session_id: int, *,
     }, write_json=False)
     participants = [{"person_id": r["person_id"], "fixed_amount": r["amount"]} for r in s["result"]]
     set_txn_aa(conn, txn["id"], s["payer_id"], participants, write_json=False)
+    conn.execute("INSERT INTO aa_session_txn (session_id, txn_id) VALUES (?, ?)",
+                 (session_id, txn["id"]))
+    conn.commit()
     if write_json:
         jsonsync.export_json(conn)
     return service.get_txn(conn, txn["id"])
+
+
+def _session_txn(conn: sqlite3.Connection, session_id: int) -> Optional[int]:
+    row = conn.execute("SELECT txn_id FROM aa_session_txn WHERE session_id = ?",
+                       (session_id,)).fetchone()
+    return row["txn_id"] if row else None
+
+
+def list_receipt_txns(conn: sqlite3.Connection) -> list:
+    """AA transactions that came from the receipt calculator (have line items)."""
+    out = []
+    for r in conn.execute(
+        """SELECT l.session_id, t.id AS txn_id, t.txn_date, t.content, t.amount_minor,
+                  t.aa_settled, cur.code AS currency, cur.minor_unit,
+                  (SELECT COUNT(*) FROM aa_session_item i WHERE i.session_id = l.session_id) AS n_items
+           FROM   aa_session_txn l
+           JOIN   txn t ON t.id = l.txn_id
+           JOIN   currency cur ON cur.id = t.currency_id
+           ORDER  BY t.txn_date DESC, t.id DESC"""):
+        out.append({"session_id": r["session_id"], "txn_id": r["txn_id"], "date": r["txn_date"],
+                    "content": r["content"], "currency": r["currency"],
+                    "amount": str(money.from_minor(r["amount_minor"], r["minor_unit"])),
+                    "aa_settled": bool(r["aa_settled"]), "item_count": r["n_items"]})
+    return out
+
+
+def link_existing_sessions(conn: sqlite3.Connection) -> int:
+    """Backfill links for txns generated before aa_session_txn existed.
+
+    A session is linked to an AA txn only on an exact match — same total,
+    currency, payer, and every participant's owed amount equal to the session's
+    computed split — and only when exactly one unlinked txn matches. Newest
+    sessions are tried first, so of two identical sessions the later one wins.
+    Idempotent; returns the number of links created.
+    """
+    made = 0
+    for s in conn.execute(
+            "SELECT id FROM aa_session WHERE id NOT IN (SELECT session_id FROM aa_session_txn) "
+            "ORDER BY id DESC").fetchall():
+        sess = get_session(conn, s["id"])
+        if not sess["result"]:
+            continue
+        mu = sess["minor_unit"]
+        want = {r["person_id"]: money.to_minor(r["amount"], mu) for r in sess["result"]}
+        total = money.to_minor(sess["total_with_tax"], mu)
+        matches = []
+        for t in conn.execute(
+                """SELECT t.id FROM txn t JOIN currency cur ON cur.id = t.currency_id
+                   WHERE t.is_aa = 1 AND t.amount_minor = ? AND cur.code = ?
+                     AND t.payer_id IS ? AND t.id NOT IN (SELECT txn_id FROM aa_session_txn)""",
+                (total, sess["currency"], sess["payer_id"])):
+            owed = {p["person_id"]: p["owed_amount_minor"] for p in conn.execute(
+                "SELECT person_id, owed_amount_minor FROM txn_participant WHERE txn_id = ?", (t["id"],))}
+            if owed == want:
+                matches.append(t["id"])
+        if len(matches) == 1:
+            conn.execute("INSERT INTO aa_session_txn (session_id, txn_id) VALUES (?, ?)",
+                         (s["id"], matches[0]))
+            made += 1
+    if made:
+        conn.commit()
+    return made

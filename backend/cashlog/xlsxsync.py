@@ -79,12 +79,18 @@ def _db_hash(direction: str, txn_date: str, amount_minor: int, code: str,
 
 
 def _fetch_txns(conn: sqlite3.Connection, direction: str) -> list:
+    """Rows to sync. ``eff_amount_minor`` (txn_eff view) is what the workbook
+    holds: my own share for a settled AA expense, the full amount otherwise.
+    The row hash is always taken over that workbook-facing amount, so export and
+    diff agree; ``amount_minor`` (the stored total) is never written to the sheet
+    for those rows and is restored when an edit comes back from it."""
     return conn.execute(
         """SELECT t.id, t.external_uid, t.txn_date, t.amount_minor, t.content,
+                  t.eff_amount_minor, t.eff_is_share,
                   t.note, t.rate_used, t.last_xlsx_hash, t.last_synced_at, t.revision,
                   cur.code AS code, cur.name AS ccy_name, cur.minor_unit,
                   c.name AS cat_name
-           FROM   txn t
+           FROM   txn_eff t
            JOIN   currency cur ON cur.id = t.currency_id
            LEFT   JOIN category c ON c.id = t.category_id
            WHERE  t.direction = ?
@@ -252,7 +258,7 @@ def export_to_xlsx(conn: sqlite3.Connection, target: Optional[Path] = None, *,
 
         r = 2
         for t in _fetch_txns(conn, direction):
-            major = money.from_minor(t["amount_minor"], t["minor_unit"])
+            major = money.from_minor(t["eff_amount_minor"], t["minor_unit"])
             _write_cell(ws, r, 1, date.fromisoformat(t["txn_date"]), templates, date_cell=True)
             _write_cell(ws, r, 2, float(major), templates)
             _write_cell(ws, r, 3, t["ccy_name"], templates)
@@ -261,7 +267,7 @@ def export_to_xlsx(conn: sqlite3.Connection, target: Optional[Path] = None, *,
             _write_cell(ws, r, 6, f"=B{r}*G{r}", templates)
             _write_cell(ws, r, 7, float(t["rate_used"]) if t["rate_used"] is not None else None, templates)
             _write_cell(ws, r, UID_COL, t["external_uid"], templates)
-            pending.append((t["id"], _db_hash(direction, t["txn_date"], t["amount_minor"],
+            pending.append((t["id"], _db_hash(direction, t["txn_date"], t["eff_amount_minor"],
                                               t["code"], t["content"], t["cat_name"], t["note"])))
             r += 1
             written[direction] += 1
@@ -353,10 +359,12 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
     in_scope_uids = {"expense": set(), "income": set()}
     for direction in DATA_SHEETS:
         for t in _fetch_txns(conn, direction):
-            cur_hash = _db_hash(direction, t["txn_date"], t["amount_minor"], t["code"],
+            cur_hash = _db_hash(direction, t["txn_date"], t["eff_amount_minor"], t["code"],
                                 t["content"], t["cat_name"], t["note"])
             db_by_uid[t["external_uid"]] = {
                 "id": t["id"], "direction": direction, "current_hash": cur_hash,
+                "is_share": bool(t["eff_is_share"]), "code": t["code"],
+                "amount_minor": t["amount_minor"], "eff_amount_minor": t["eff_amount_minor"],
                 "baseline": t["last_xlsx_hash"], "content": t["content"],
                 "synced": t["last_synced_at"] is not None,
             }
@@ -409,6 +417,22 @@ def diff_from_xlsx(conn: sqlite3.Connection, source: Optional[Path] = None) -> S
                 if rec is None:
                     diff.unknown_uid.append({"sheet": sheet_name, "row": r, "uid": uid})
                     continue
+
+                if rec["is_share"] and xlsx_hash != rec["baseline"]:
+                    # Structured AA: the sheet shows my share, but the DB must keep
+                    # the full amount (the split is derived from it). An amount /
+                    # currency edit made in Excel can't be mapped back to a total,
+                    # so it is reported instead of silently overwriting it; any
+                    # other edit applies with the stored total restored. (A row
+                    # untouched in Excel — e.g. still showing a pre-AA total — is
+                    # just "unchanged"; the next export rewrites it.)
+                    if (amount_minor != rec["eff_amount_minor"]
+                            or ccy_row["code"] != rec["code"]):
+                        diff.anomalies.append({
+                            "sheet": sheet_name, "row": r, "uid": uid,
+                            "reasons": ["已结清 AA 的金额/币种请在应用内修改（表格中显示的是我的部分）"]})
+                        continue
+                    payload["amount_minor"] = rec["amount_minor"]
 
                 xlsx_changed = xlsx_hash != rec["baseline"]
                 db_changed = rec["current_hash"] != rec["baseline"]

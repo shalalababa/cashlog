@@ -16,6 +16,7 @@ import type {
   RateInfo,
   RateRefreshResult,
   RateStatus,
+  ReceiptTxn,
   Session,
   SessionSummary,
   SettlementGroup,
@@ -108,6 +109,7 @@ export const api = {
 
   // --- AA: calculator ---
   sessions: () => req<SessionSummary[]>("/api/aa/sessions"),
+  receipts: () => req<ReceiptTxn[]>("/api/aa/receipts"),
   getSession: (id: number) => req<Session>(`/api/aa/sessions/${id}`),
   saveSession: (body: any) =>
     body.id

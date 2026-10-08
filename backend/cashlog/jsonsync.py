@@ -16,7 +16,7 @@ from typing import Optional
 TABLES = [
     "currency", "exchange_rate", "category", "person",
     "txn", "txn_participant", "fiscal_month", "fiscal_month_total_override", "budget",
-    "aa_session", "aa_session_item", "aa_session_item_share", "setting",
+    "aa_session", "aa_session_item", "aa_session_item_share", "aa_session_txn", "setting",
 ]
 
 

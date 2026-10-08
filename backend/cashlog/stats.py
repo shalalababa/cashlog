@@ -115,15 +115,15 @@ def _validate_direction(direction: str) -> str:
 # ---------------------------------------------------------------------------
 def expense_total_micro(conn: sqlite3.Connection, start: str, end_excl: str, *,
                         exclude_flagged: bool = True) -> int:
-    """Sum of base_amount_micro for expenses in ``[start, end_excl)``.
+    """Sum of the effective CNY (txn_eff.eff_base_micro) for expenses in ``[start, end_excl)``.
 
     With exclude_flagged (default) this is the headline fiscal total: it drops
     ``exclude_stats`` categories (学费 / 特殊) but keeps uncategorized rows.
     """
     flag = "AND COALESCE(c.exclude_stats, 0) = 0" if exclude_flagged else ""
     return conn.execute(
-        f"""SELECT COALESCE(SUM(COALESCE(t.base_amount_micro, 0)), 0) AS m
-            FROM   txn t
+        f"""SELECT COALESCE(SUM(COALESCE(t.eff_base_micro, 0)), 0) AS m
+            FROM   txn_eff t
             LEFT   JOIN category c ON c.id = t.category_id
             WHERE  t.direction = 'expense'
               AND  t.txn_date >= ? AND t.txn_date < ? {flag}""",
@@ -132,14 +132,14 @@ def expense_total_micro(conn: sqlite3.Connection, start: str, end_excl: str, *,
 
 def category_total_micro(conn: sqlite3.Connection, category_id: int,
                          start: str, end_excl: str) -> int:
-    """Sum of base_amount_micro for one category's expenses in ``[start, end_excl)``.
+    """Sum of the effective CNY (txn_eff.eff_base_micro) for one category's expenses in ``[start, end_excl)``.
 
     Used by per-category budget progress; a budget tracks the category as the
     user defined it, so the exclude_stats flag is intentionally not applied here.
     """
     return conn.execute(
-        """SELECT COALESCE(SUM(COALESCE(base_amount_micro, 0)), 0) AS m
-           FROM   txn
+        """SELECT COALESCE(SUM(COALESCE(eff_base_micro, 0)), 0) AS m
+           FROM   txn_eff
            WHERE  direction = 'expense' AND category_id = ?
              AND  txn_date >= ? AND txn_date < ?""",
         (category_id, start, end_excl)).fetchone()["m"]
@@ -174,16 +174,45 @@ def _parse_nonnegative_amount(value, field: str):
 # ---------------------------------------------------------------------------
 # Fiscal-month statistics (replicates 统计)
 # ---------------------------------------------------------------------------
-def fiscal_months(conn: sqlite3.Connection) -> list[dict]:
+def _fiscal_periods(conn: sqlite3.Connection, stored: list[str], today: date) -> list[str]:
+    """Every fiscal close from the first one with data up to the current one.
+
+    ``fiscal_month`` rows only exist for months whose manual inputs were saved
+    (or imported from the workbook), so new months would otherwise never show
+    up. Start at the earlier of the first stored close and the close of the
+    first transaction; end at the later of the current close (``today``) and the
+    close of the latest transaction / stored row; fill every gap in between.
+    """
+    ends = [_parse(p) for p in stored]
+    first_txn, last_txn = conn.execute("SELECT MIN(txn_date), MAX(txn_date) FROM txn").fetchone()
+    if first_txn:
+        ends += [current_fiscal_end(_parse(first_txn)), current_fiscal_end(_parse(last_txn))]
+    if not ends:
+        return []
+    ends.append(current_fiscal_end(today))
+    cur, last = min(ends), max(ends)
+    out: list[str] = []
+    while cur <= last:
+        out.append(_iso(cur))
+        cur = edate(cur, 1)
+    return out
+
+
+def fiscal_months(conn: sqlite3.Connection, today: Optional[date] = None) -> list[dict]:
+    """One row per fiscal month (see _fiscal_periods). Months without a stored
+    ``fiscal_month`` row are shown with a zero USD credit-card figure; saving
+    one (save_fiscal_month) upserts it. Read-only."""
     base_id = rates.get_base_currency_id(conn)
-    out: list[dict] = []
-    for fm in conn.execute(
+    stored = {r["period_end"]: r for r in conn.execute(
         """SELECT fm.*, o.total_override_micro
            FROM fiscal_month fm
-           LEFT JOIN fiscal_month_total_override o ON o.period_end = fm.period_end
-           ORDER BY fm.period_end"""
-    ):
-        period_end = fm["period_end"]
+           LEFT JOIN fiscal_month_total_override o ON o.period_end = fm.period_end""")}
+    usd = conn.execute("SELECT id FROM currency WHERE code = 'USD'").fetchone()
+    blank = {"credit_card_amount_minor": 0, "credit_card_ccy_id": usd["id"] if usd else None,
+             "total_override_micro": None}
+    out: list[dict] = []
+    for period_end in _fiscal_periods(conn, list(stored), today or date.today()):
+        fm = stored.get(period_end, blank)
         start, end_excl = fiscal_range(period_end)
 
         computed_micro = expense_total_micro(conn, start, end_excl)
@@ -306,9 +335,9 @@ def category_breakdown(conn: sqlite3.Connection, date_from: str, date_to: str, *
                   c.name        AS name,
                   c.color       AS color,
                   COALESCE(c.exclude_stats, 0) AS exclude_stats,
-                  COALESCE(SUM(COALESCE(t.base_amount_micro, 0)), 0) AS micro,
+                  COALESCE(SUM(COALESCE(t.eff_base_micro, 0)), 0) AS micro,
                   COUNT(*) AS n
-           FROM   txn t
+           FROM   txn_eff t
            LEFT   JOIN category c ON c.id = t.category_id
            WHERE  t.direction = ? AND t.txn_date >= ? AND t.txn_date <= ?
            GROUP BY t.category_id
@@ -343,8 +372,8 @@ def category_trend(conn: sqlite3.Connection, date_from: str, date_to: str, *,
         """SELECT t.txn_date AS d, t.category_id AS cid,
                   c.name AS name, c.color AS color,
                   COALESCE(c.exclude_stats, 0) AS exclude_stats,
-                  COALESCE(t.base_amount_micro, 0) AS micro
-           FROM   txn t
+                  COALESCE(t.eff_base_micro, 0) AS micro
+           FROM   txn_eff t
            LEFT   JOIN category c ON c.id = t.category_id
            WHERE  t.direction = ? AND t.txn_date >= ? AND t.txn_date <= ?""",
         (direction, _iso(start), _iso(end))).fetchall()

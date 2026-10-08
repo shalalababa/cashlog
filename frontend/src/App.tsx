@@ -197,7 +197,7 @@ export default function App() {
           />
         </>
       ) : view === "aa" ? (
-        <AAView currencies={meta.currencies} categories={meta.categories} notify={notify} />
+        <AAView currencies={meta.currencies} categories={meta.categories} notify={notify} onTxnsChanged={reload} />
       ) : view === "stats" ? (
         <StatsView categories={meta.categories} notify={notify} />
       ) : view === "budget" ? (
